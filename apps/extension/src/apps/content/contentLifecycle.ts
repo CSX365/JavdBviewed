@@ -11,7 +11,9 @@ import { performanceOptimizer } from '../../platform/tasks';
 import { contentFilterManager } from '../../features/contentFilter';
 import { magnetSearchManager, normalizeMagnetSortMode } from '../../features/magnets';
 import { listEnhancementManager } from '../../features/listEnhancement';
-import { actorEnhancementManager } from '../../features/actorEnhancement';
+import { actorEnhancementManager, actorQuickActionsManager } from '../../features/actorEnhancement';
+import { anchorOptimizationManager } from '../../features/anchorOptimization/content';
+import { onlineAvailabilityManager } from '../../features/onlineAvailability';
 import { stopPreviewVideoWatcher } from '../../features/previews';
 import { initOrchestrator } from './orchestrator';
 
@@ -36,6 +38,10 @@ export function installContentLifecycleHandlers(cleanups: ContentLifecycleCleanu
             keyboardShortcutsManager?.destroy?.();
             embyEnhancementManager?.destroy();
             magnetSearchManager?.destroy?.();
+            actorEnhancementManager?.destroy?.();
+            actorQuickActionsManager?.destroy?.();
+            anchorOptimizationManager?.destroy?.();
+            onlineAvailabilityManager?.destroy?.();
 
             log('Resources cleaned up on page unload');
         } catch (error) {
