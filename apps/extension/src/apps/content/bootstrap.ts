@@ -27,6 +27,7 @@ import { magnetSearchManager, normalizeMagnetSortMode } from '../../features/mag
 import { anchorOptimizationManager } from '../../features/anchorOptimization/content';
 import { listEnhancementManager } from '../../features/listEnhancement';
 import { actorEnhancementManager, actorQuickActionsManager } from '../../features/actorEnhancement';
+import { isActorEnhancementEnabled } from '../../features/actorEnhancement/actorEnhancementGate';
 import { embyEnhancementManager } from '../../features/embyEnhancement/content';
 import { exposePreviewVolumeDebug, installPreviewVolumeControl } from '../../features/previews';
 import { initOrchestrator, type InitPhase } from './orchestrator';
@@ -240,7 +241,7 @@ async function initialize(): Promise<void> {
         if (enabledActorRemarks) {
             preregisterBlueprints.push({ phase: 'idle', label: 'actorRemarks:actorPage', timeout: getActorRemarksTaskTimeoutMs(settings as any) });
         }
-        if (settings.userExperience.enableActorEnhancement !== false) {
+        if (isActorEnhancementEnabled(settings)) {
             preregisterBlueprints.push({ phase: 'critical', label: 'actorEnhancement:init', visibilityPolicy: 'background_allowed' });
             if ((settings.actorEnhancement as any)?.enableActionButtons !== false) {
                 preregisterBlueprints.push({ phase: 'critical', label: 'actorEnhancement:actionButtons', priority: 9, visibilityPolicy: 'background_allowed' });
@@ -566,7 +567,7 @@ async function initialize(): Promise<void> {
     }
 
     // 初始化演员页增强功能（仅演员页 critical）
-    if (settings.actorEnhancement?.enabled !== false && isActorPage) {
+    if (isActorEnhancementEnabled(settings) && isActorPage) {
         const legacyScanButtonEnabled = (settings.actorEnhancement as any)?.enableScanNewWorks === true;
         const showActorPageScanButton = newWorksConfig?.showActorPageScanButton === true || legacyScanButtonEnabled;
         actorEnhancementManager.updateConfig({
