@@ -5,6 +5,7 @@
  */
 export {
     checkAndUpdateVideoStatus,
+    isStatusPollingSignatureStoppable,
     updateFaviconForStatus,
     updatePageTitleWithStatus,
 } from './statusManager';

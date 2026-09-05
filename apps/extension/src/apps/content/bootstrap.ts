@@ -17,7 +17,7 @@ import {
     getVideoDetailTaskBlueprints,
     normalizeVideoEnhancementSchedulingMode,
 } from '../../features/videoDetail';
-import { checkAndUpdateVideoStatus } from '../../features/videoStatus';
+import { checkAndUpdateVideoStatus, isStatusPollingSignatureStoppable } from '../../features/videoStatus';
 import { initExportFeature } from '../../features/pageExport/content';
 import { initDrive115Features } from '../../features/drive115/content';
 import { defaultDataAggregator } from '../../features/dataAggregator';
@@ -674,6 +674,7 @@ async function initialize(): Promise<void> {
         });
 
         checkAndUpdateVideoStatus();
+        const statusVideoId = extractVideoIdFromPage();
         let lastStatusSignature = '';
         let stableCount = 0;
         const statusIntervalId = setInterval(() => {
@@ -681,7 +682,10 @@ async function initialize(): Promise<void> {
                 countContentPerformanceEvent('interval.videoStatusPolling');
                 checkAndUpdateVideoStatus();
                 const signature = `${document.title}|${currentFaviconState ?? 'null'}|${currentTitleStatus ?? 'null'}`;
-                if (signature === lastStatusSignature && signature.includes('null') === false) {
+                // 当前视频已有记录（initialSync 已提交）时，"无标题标记"（如 untracked）
+                // 也是最终稳定态，允许停止轮询；否则签名中的 'null' 仍按"未落定"处理
+                const hasSettledRecord = !!statusVideoId && !!STATE.records[statusVideoId];
+                if (signature === lastStatusSignature && isStatusPollingSignatureStoppable(signature, hasSettledRecord)) {
                     stableCount++;
                 } else {
                     stableCount = 0;

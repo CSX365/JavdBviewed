@@ -149,3 +149,16 @@ export function updatePageTitleWithStatus(_videoId: string, status: string): voi
         }, 100);
     }
 }
+
+/**
+ * 判断详情页状态轮询的签名是否处于"可停止的稳定态"。
+ *
+ * 背景：轮询停止条件为"签名连续 3 次稳定且签名不含 'null'"。但当影片记录为
+ * untracked（或页面标题无状态标记）时，currentTitleStatus 恒为 null，签名会
+ * 永远包含 'null'，导致 interval 永不 clearInterval。当当前视频已有记录
+ * （initialSync 已提交）时，记录查询已是权威结果，此时签名中的 'null'
+ * 属于"最终无标记"的稳定状态，同样允许在连续稳定后停止轮询。
+ */
+export function isStatusPollingSignatureStoppable(signature: string, hasSettledRecord: boolean): boolean {
+    return signature.includes('null') === false || hasSettledRecord;
+}
