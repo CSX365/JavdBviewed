@@ -4,8 +4,8 @@
  * 覆盖 S1.5 审计涉及的主链面：
  *   T1 详情页主链（干净 profile）：
  *      - 注入标记 documentElement.dataset.javdbExtensionInjected === '1'；
- *      - F2 语义固化：主开关 videoEnhancement.enabled 默认 off 时，
- *        「相关清单」点击拦截仍安装（核心 UX 默认开启，见 research/p0-content.md）；
+ *      - F2 语义固化：主开关 videoEnhancement.enabled 默认开启，
+ *        「相关清单」点击拦截随默认值安装（见 research/p0-content.md F2）；
  *      - 热键默认关（userExperience.enableKeyboardShortcuts 默认 false）：
  *        页面无 .keyboard-shortcuts-help 帮助面板。
  *   T2 状态同步（seed 已看记录）：
@@ -16,11 +16,17 @@
  *   T3 演员页增强（F1 统一门控开启后）：
  *      - seed userExperience.enableActorEnhancement=true 后，
  *        演员页控制台出现「演员页增强功能已启用」marker。
+ *   T4 主开关显式关（seed videoEnhancement.enabled=false）：
+ *      - 无「相关清单」点击拦截 log（负向断言，先等主链就绪信号再观察）；
+ *      - 状态同步照常：seed 已看记录后详情页标题仍出现 [已观看]
+ *        （数据行为不受主开关约束）。
+ *   T5 子开关显式关（seed videoEnhancement.enableRelatedLists=false，主开）：
+ *      - 无「相关清单」点击拦截 log（负向断言）。
  * @module tests/extension-e2e
  */
 import { expect, test } from '@playwright/test';
 import path from 'node:path';
-import type { BrowserContext } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import {
   extensionPageUrl,
   launchExtensionContext,
@@ -201,10 +207,26 @@ async function seedViewedRecord(context: BrowserContext, extensionId: string, vi
   }
 }
 
+/** 负向断言护栏：先等主链正信号（isolated world 注入标记），再固定观察窗口后断言
+ * 目标 log 缺席。直接断言"无 log"会在内容脚本尚未跑完时竞态假过。 */
+async function expectNoConsoleLog(page: Page, consoleLines: string[], needle: string, observeMs = 10_000): Promise<void> {
+  await expect
+    .poll(async () => page.evaluate(() => document.documentElement.dataset.javdbExtensionInjected), {
+      timeout: 45_000,
+      message: 'documentElement 无 javdbExtensionInjected 标记（内容脚本未注入?）',
+    })
+    .toBe('1');
+  await page.waitForTimeout(observeMs);
+  expect(
+    consoleLines.some((line) => line.includes(needle)),
+    `控制台不应出现「${needle}」（主链已就绪但目标行为仍被安装?）`,
+  ).toBe(false);
+}
+
 test.describe('content main chain on JavDB real site (S1.5)', () => {
   test.setTimeout(240_000);
 
-  test('T1: detail page injection + related-lists interception (main switch off) + shortcuts default off', async ({}, testInfo) => {
+  test('T1: detail page injection + related-lists interception (main switch on by default) + shortcuts default off', async ({}, testInfo) => {
     const target = await pickLatestVideoWithActor();
     test.skip(!target, 'javdb570 网络不可用或页面结构变化，跳过真机检查');
 
@@ -234,7 +256,7 @@ test.describe('content main chain on JavDB real site (S1.5)', () => {
         })
         .toBe('1');
 
-      // 2) F2 语义固化：主开关默认 off 时相关清单拦截仍安装（核心 UX 默认开启）
+      // 2) F2 语义固化：主开关默认开启，相关清单点击拦截随默认值安装
       await expect
         .poll(
           () => consoleLines.some((line) => line.includes('[RelatedLists] click interception installed')),
@@ -346,6 +368,90 @@ test.describe('content main chain on JavDB real site (S1.5)', () => {
         .toBeTruthy();
 
       console.info(`[E2E main-chain] T3 通过: ${target.actorUrl}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('T4: main switch off disables interception but keeps status sync (F2)', async ({}, testInfo) => {
+    const target = await pickLatestVideoWithActor();
+    test.skip(!target, 'javdb570 网络不可用或页面结构变化，跳过真机检查');
+
+    stripProxyEnv();
+    const harnessOptions = resolveTestHarnessOptions(testInfo.outputPath('profile'));
+    const context = await launchExtensionContext(harnessOptions, {
+      headless: false,
+      channel: process.env.JAVDB_EXTENSION_CHANNEL ?? 'chromium',
+      extraArgs: ['--no-proxy-server'],
+    });
+
+    try {
+      const extensionId = await readExtensionId(context);
+      await presetAgeGateCookie(context);
+
+      // 0) 主开关显式关（settings 存于 chrome.storage.local 单键，getSettings 按节 merge 默认值，只写覆盖节）
+      await seedExtensionStorage(context, {
+        settings: { videoEnhancement: { enabled: false } },
+      });
+      // seed 已看记录：数据行为（状态同步）不受主开关约束，应照常工作
+      await seedViewedRecord(context, extensionId, target.videoCode);
+
+      const page = context.pages()[0] ?? (await context.newPage());
+      const consoleLines: string[] = [];
+      page.on('console', (msg) => consoleLines.push(msg.text()));
+
+      await page.goto(target.videoUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await dismissAgeGateIfPresent(page);
+
+      // 1) 状态同步照常：详情页标题出现 [已观看]（数据行为不被主开关误伤）
+      await expect
+        .poll(async () => (await page.title()).includes('[已观看]'), {
+          timeout: 60_000,
+          message: `详情页标题未出现 [已观看]（videoCode=${target.videoCode}，数据行为是否被主开关误伤?）`,
+        })
+        .toBeTruthy();
+
+      // 2) 负向断言：无相关清单拦截安装 log
+      await expectNoConsoleLog(page, consoleLines, '[RelatedLists] click interception installed');
+
+      console.info(`[E2E main-chain] T4 通过: ${target.videoUrl} code=${target.videoCode}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('T5: related-lists sub switch off disables interception only (F2)', async ({}, testInfo) => {
+    const target = await pickLatestVideoWithActor();
+    test.skip(!target, 'javdb570 网络不可用或页面结构变化，跳过真机检查');
+
+    stripProxyEnv();
+    const harnessOptions = resolveTestHarnessOptions(testInfo.outputPath('profile'));
+    const context = await launchExtensionContext(harnessOptions, {
+      headless: false,
+      channel: process.env.JAVDB_EXTENSION_CHANNEL ?? 'chromium',
+      extraArgs: ['--no-proxy-server'],
+    });
+
+    try {
+      await readExtensionId(context);
+      await presetAgeGateCookie(context);
+
+      // 0) 主开关保持默认开，仅子开关 enableRelatedLists 显式关
+      await seedExtensionStorage(context, {
+        settings: { videoEnhancement: { enableRelatedLists: false } },
+      });
+
+      const page = context.pages()[0] ?? (await context.newPage());
+      const consoleLines: string[] = [];
+      page.on('console', (msg) => consoleLines.push(msg.text()));
+
+      await page.goto(target.videoUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await dismissAgeGateIfPresent(page);
+
+      // 负向断言：无相关清单拦截安装 log（主链正信号 = 注入标记，观察窗口内无 log）
+      await expectNoConsoleLog(page, consoleLines, '[RelatedLists] click interception installed');
+
+      console.info(`[E2E main-chain] T5 通过: ${target.videoUrl} code=${target.videoCode}`);
     } finally {
       await context.close();
     }
