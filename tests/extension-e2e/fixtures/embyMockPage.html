@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <title>Mock Emby 媒体库</title>
+</head>
+<body>
+  <h1>Mock Emby 媒体库</h1>
+  <div id="grid">
+    <div class="item"><div class="name">ABC-123 测试影片一</div></div>
+    <div class="item"><div class="name">SDD-456 测试影片二</div></div>
+    <div class="item"><div class="name">普通影片无番号</div></div>
+  </div>
+  <div id="dynamic-slot"></div>
+  <script>
+    // 模拟媒体服务器 SPA 的动态追加（childList mutation，验证脏区扫描链路）
+    setTimeout(function () {
+      var slot = document.getElementById('dynamic-slot');
+      var el = document.createElement('div');
+      el.className = 'item item-dynamic';
+      var name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = 'HDF-789 SPA 动态追加影片';
+      el.appendChild(name);
+      slot.appendChild(el);
+    }, 1200);
+  </script>
+</body>
+</html>
