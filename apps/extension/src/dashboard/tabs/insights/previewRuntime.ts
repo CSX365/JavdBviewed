@@ -19,6 +19,9 @@ interface CreateInsightsPreviewRuntimeOptions {
 export function createInsightsPreviewRuntime(options: CreateInsightsPreviewRuntimeOptions) {
   const documentRef = options.documentRef || document;
   const preparePreviewHtml = options.preparePreviewHtml || prepareInsightsPreviewHtml;
+  // iframe 当前 srcdoc 是否由「当前 raw」生成：温恢复时跳过 srcdoc 重写
+  // （重写=iframe 重解析整份月报，S1 归因 §9.2 两个 ~500ms 长任务的来源）
+  let previewInIframeValid = false;
 
   function getPreviewIframe(): HTMLIFrameElement | null {
     return documentRef.getElementById('insights-preview') as HTMLIFrameElement | null;
@@ -34,6 +37,7 @@ export function createInsightsPreviewRuntime(options: CreateInsightsPreviewRunti
   function writePreparedHtml(iframe: HTMLIFrameElement, html: string): void {
     iframe.srcdoc = preparePreviewHtml(html);
     options.adjustIframeHeight(iframe);
+    previewInIframeValid = true;
   }
 
   function writePreview(rawHtml: string, writeOptions: WritePreviewOptions = {}): boolean {
@@ -56,17 +60,26 @@ export function createInsightsPreviewRuntime(options: CreateInsightsPreviewRunti
     return true;
   }
 
-  function refreshPreviewFromRaw(): boolean {
+  function refreshPreviewFromRaw(request: { force?: boolean } = {}): boolean {
     const iframe = getPreviewIframe();
     const rawHtml = options.getCurrentPreviewRawHtml();
     if (!iframe || !rawHtml) return false;
+
+    // 非强制刷新且 iframe 仍持当前预览时跳过重写（tab 温恢复路径）；
+    // 主题切换等显式场景传 force=true 保持原「重烘焙」行为。
+    if (!request.force && previewInIframeValid) return true;
 
     writePreparedHtml(iframe, rawHtml);
     return true;
   }
 
+  function markIframeCleared(): void {
+    previewInIframeValid = false;
+  }
+
   return {
     writePreview,
     refreshPreviewFromRaw,
+    markIframeCleared,
   };
 }

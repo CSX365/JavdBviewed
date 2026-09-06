@@ -109,19 +109,20 @@ function ensureInsightsLifecycle(): void {
     onActive: () => { insightsActive = true; },
     onRestore: () => {
       insightsActive = true;
+      // 温恢复：iframe 仍持当前预览时 refreshPreviewFromRaw 内部跳过重写（S1 §9.2）
       if (currentPreviewRawHTML) previewRuntime.refreshPreviewFromRaw();
       else void previewSample();
       void insightsTab.refreshHistory();
     },
     onHidden: () => {
       insightsActive = false;
-      const iframe = getEl<HTMLIFrameElement>('insights-preview');
-      if (iframe) iframe.srcdoc = '';
+      // 不再清空 iframe.srcdoc：保留温文档供下次恢复复用，仅 onDispose 释放
       clearTabWorkset(document.getElementById('tab-insights'), ['#insights-history-list']);
     },
     onDispose: () => {
       const iframe = getEl<HTMLIFrameElement>('insights-preview');
       if (iframe) iframe.srcdoc = '';
+      previewRuntime.markIframeCleared();
       clearTabWorkset(document.getElementById('tab-insights'), ['#insights-history-list']);
       insightsActive = false;
       insightsLifecycleUnregister?.();
@@ -322,7 +323,8 @@ export const insightsTab = {
     // 监听主题切换，自动重新渲染预览
     try {
       themeManager.onThemeChange(() => {
-        previewRuntime.refreshPreviewFromRaw();
+        // 主题变化需要重烘焙月报主题，强制重写
+        previewRuntime.refreshPreviewFromRaw({ force: true });
       });
     } catch (err) {
       log.warn('[Insights] 主题切换监听器注册失败', err);
