@@ -101,7 +101,7 @@ describe('ActorsTab initialization', () => {
     expect(getStats).toHaveBeenCalledTimes(1);
   });
 
-  it('restores the cached actor page before scheduling a background refresh', async () => {
+  it('restores the cached actor page without re-querying when data is unchanged while hidden', async () => {
     vi.useFakeTimers();
     searchActors.mockResolvedValue({
       actors: [{ id: 'actor-1', name: 'Actor 1', aliases: [], gender: 'female', category: 'A' }],
@@ -129,8 +129,44 @@ describe('ActorsTab initialization', () => {
     dashboardTabLifecycle.notify('hidden', 'tab-actors');
     dashboardTabLifecycle.notify('restore', 'tab-actors');
 
+    // 温恢复：缓存重渲染一次；隐藏期无数据变更 → 不触发后台重查（S1 §9.2 去双渲染）
     expect(renderActorListRuntime).toHaveBeenCalledTimes(renderCallsAfterInitialLoad + 1);
     expect(searchActors).toHaveBeenCalledTimes(searchCallsAfterInitialLoad);
+
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+    expect(searchActors).toHaveBeenCalledTimes(searchCallsAfterInitialLoad);
+    dashboardTabLifecycle.notify('dispose', 'tab-actors');
+  });
+
+  it('refreshes on restore when actor data changed while the tab was hidden', async () => {
+    vi.useFakeTimers();
+    searchActors.mockResolvedValue({
+      actors: [{ id: 'actor-1', name: 'Actor 1', aliases: [], gender: 'female', category: 'A' }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      hasMore: false,
+    });
+    getStats.mockResolvedValue({
+      total: 1,
+      byGender: { female: 1 },
+      byCategory: { A: 1 },
+      recentlyAdded: 0,
+      recentlyUpdated: 0,
+      blacklisted: 0,
+    });
+
+    const { ActorsTab } = await import('./actors');
+    const { dashboardTabLifecycle } = await import('./tabLifecycle');
+    const tab = new ActorsTab();
+    await tab.initActorsTab();
+    const searchCallsAfterInitialLoad = searchActors.mock.calls.length;
+
+    dashboardTabLifecycle.notify('hidden', 'tab-actors');
+    // 隐藏期数据变更 → 置 dirty，恢复时一次性刷新
+    document.dispatchEvent(new Event('actors-data-updated'));
+    dashboardTabLifecycle.notify('restore', 'tab-actors');
 
     await vi.runOnlyPendingTimersAsync();
     await Promise.resolve();

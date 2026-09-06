@@ -66,6 +66,8 @@ export class ActorsTab {
     private actorsDataUpdatedHandler: (() => void) | null = null;
     private restoreRefreshTimer: number | null = null;
     private initialStatsCancel: (() => void) | null = null;
+    /** 隐藏期间数据有变更：恢复时基于该标志决定是否刷新（避免同数据双渲染，S1 §9.2） */
+    private dataChangedWhileHidden = false;
     private renderedActorSnapshot: {
         result: ActorPagedSearchResult;
         subscribedActorIds: Set<string>;
@@ -187,7 +189,12 @@ export class ActorsTab {
     private setupDataUpdateListeners(): void {
         // 监听演员数据更新事件
         this.actorsDataUpdatedHandler = () => {
-            if (!this.active) return;
+            if (!this.active) {
+                // 隐藏期变更不立即重载（active 守卫防后台无谓渲染），
+                // 标记 dirty 供恢复时一次性刷新
+                this.dataChangedWhileHidden = true;
+                return;
+            }
             this.loadActors();
             this.updateStats();
         };
@@ -262,12 +269,17 @@ export class ActorsTab {
                 this.active = true;
                 if (this.isInitialized) {
                     this.restoreCachedActorList();
-                    this.scheduleRestoreRefresh();
+                    // 仅当隐藏期间数据有变更才重新查询渲染，否则缓存即最新（S1 §9.2）
+                    if (this.dataChangedWhileHidden) {
+                        this.dataChangedWhileHidden = false;
+                        this.scheduleRestoreRefresh();
+                    }
                 }
             },
             onHidden: () => this.suspendForHiddenTab(),
             onDispose: () => {
                 this.suspendForHiddenTab();
+                this.disposeActorPanels();
                 if (this.actorsDataUpdatedHandler) {
                     document.removeEventListener('actors-data-updated', this.actorsDataUpdatedHandler);
                     this.actorsDataUpdatedHandler = null;
@@ -286,12 +298,18 @@ export class ActorsTab {
             window.clearTimeout(this.restoreRefreshTimer);
             this.restoreRefreshTimer = null;
         }
+        // 保留列表 DOM（温态）：演员列表量级小（数十至数百行），清空会导致每次恢复
+        // 「缓存渲染 + 立即再查再渲染」双渲染（S1 §9.2）；完整释放交给 onDispose。
+    }
+
+    private disposeActorPanels(): void {
         const list = document.getElementById('actorListContainer');
         const pagination = document.getElementById('actorPaginationContainer');
         const stats = document.getElementById('actorStatsContainer');
         list?.replaceChildren();
         pagination?.replaceChildren();
         stats?.replaceChildren();
+        this.renderedActorSnapshot = null;
         this.showLoading(false);
     }
 
