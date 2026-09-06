@@ -29,7 +29,7 @@ describe('enhancementSettingsModel', () => {
     expect(d.showStatusBadge).toBe(true);
     expect(d.enableLibraryMatchStatus).toBe(false);
     expect(d.enableTranslation).toBe(false);
-    expect(d.enableVideoEnhancement).toBe(false);
+    expect(d.enableVideoEnhancement).toBe(true);
     expect(d.veEnableWantSync).toBe(true);
     expect(d.veEnableExternalEntryPanel).toBe(true);
     expect(d.enableMagnetSearch).toBe(false);

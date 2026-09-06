@@ -64,6 +64,43 @@ function migrateLegacyDrive115Settings(raw: any): { drive115: Record<string, any
   return { drive115: next, changed };
 }
 
+/**
+ * 迁移：videoEnhancement.enableTranslation → dataEnhancement.enableTranslation。
+ *
+ * 历史设置表单曾双写两个字段，但内容脚本执行路径只读 dataEnhancement.enableTranslation
+ * （见 pageHandler 标题翻译门控），videoEnhancement.enableTranslation 是孤儿字段。
+ * 本迁移把仅存于旧 profile 的 ve 值一次性搬到 de（内存迁移，不落盘；
+ * 下次保存设置时写路径已不再写 ve 字段，存储自然收敛）。
+ */
+function migrateLegacyTranslationSettings(stored: any): {
+  dataEnhancement: Record<string, any>;
+  videoEnhancement: Record<string, any>;
+  changed: boolean;
+} {
+  const ve =
+    stored?.videoEnhancement && typeof stored.videoEnhancement === 'object'
+      ? { ...stored.videoEnhancement }
+      : {};
+  const de =
+    stored?.dataEnhancement && typeof stored.dataEnhancement === 'object'
+      ? { ...stored.dataEnhancement }
+      : {};
+  let changed = false;
+
+  const hasVeField = Object.prototype.hasOwnProperty.call(ve, 'enableTranslation');
+  const hasDeField = Object.prototype.hasOwnProperty.call(de, 'enableTranslation');
+  if (hasVeField && !hasDeField) {
+    de.enableTranslation = ve.enableTranslation;
+    changed = true;
+  }
+  if (hasVeField) {
+    delete ve.enableTranslation;
+    changed = true;
+  }
+
+  return { dataEnhancement: de, videoEnhancement: ve, changed };
+}
+
 function normalizeSettingsForSave<T extends Partial<ExtensionSettings>>(settings: T): T {
   if (!settings || typeof settings !== 'object') return settings;
   if (!('drive115' in settings)) return settings;
@@ -126,12 +163,14 @@ export function mergeSearchEngineTemplates(searchEngines: any[] | undefined | nu
 export async function getSettings(): Promise<ExtensionSettings> {
   const storedSettings = await getValue<Partial<ExtensionSettings>>(STORAGE_KEYS.SETTINGS, {});
   const { drive115: migratedDrive115, changed: drive115Migrated } = migrateLegacyDrive115Settings((storedSettings as any).drive115);
+  const { dataEnhancement: migratedDataEnhancement, videoEnhancement: migratedVideoEnhancement, changed: translationMigrated } = migrateLegacyTranslationSettings(storedSettings as any);
 
   log.storage('Loading settings from storage', {
     key: STORAGE_KEYS.SETTINGS,
     hasStoredSettings: !!storedSettings,
     hasPrivacy: !!storedSettings.privacy,
     drive115Migrated,
+    translationMigrated,
   });
 
   const mergedSettings: ExtensionSettings = {
@@ -163,7 +202,7 @@ export async function getSettings(): Promise<ExtensionSettings> {
     },
     dataEnhancement: {
       ...DEFAULT_SETTINGS.dataEnhancement,
-      ...(storedSettings.dataEnhancement || {}),
+      ...migratedDataEnhancement,
     },
     siteAppearance: {
       ...(DEFAULT_SETTINGS.siteAppearance || {}),
@@ -187,7 +226,7 @@ export async function getSettings(): Promise<ExtensionSettings> {
     },
     videoEnhancement: {
       ...DEFAULT_SETTINGS.videoEnhancement,
-      ...((storedSettings as any).videoEnhancement || {}),
+      ...migratedVideoEnhancement,
     },
     userExperience: {
       ...DEFAULT_SETTINGS.userExperience,

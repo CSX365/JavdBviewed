@@ -522,10 +522,11 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
 
     // 新增：影片页增强默认配置
     videoEnhancement: {
-        enabled: false,
+        // 主开关 = 「详情页 UI 增强」总闸（默认开，见 videoEnhancementGate.ts 规范化约定）；
+        // 数据行为（状态同步/想看同步/115自动已看）不受主开关约束
+        enabled: true,
         schedulingMode: 'smart' as const,
         enableCoverImage: true,
-        enableTranslation: true,
         showLoadingIndicator: true,
         enableReviewBreaker: true,
         enableFC2Breaker: true,
@@ -538,6 +539,9 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
         actorRemarksMode: 'panel' as const,
         actorRemarksTTLDays: 0,
         actorRemarksTaskTimeoutSeconds: 10,
+        // 演员名称标识 / 演员快捷操作（默认开；此前未在默认块声明，靠读侧 !== false 兜底）
+        enableActorNameMarks: true,
+        enableActorQuickActions: true,
         // 新增：影片页收藏与评分
         enableVideoFavoriteRating: true, // 默认启用
         enableRelatedLists: true,
