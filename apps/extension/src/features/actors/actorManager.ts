@@ -9,11 +9,14 @@
 import { getValue, setValue } from '../../utils/storage';
 import { STORAGE_KEYS } from '../../utils/config';
 import type { ActorRecord, ActorPagedSearchResult } from '../../types';
-import { dbActorsQuery, dbActorsGet, dbActorsPut, dbActorsDelete, dbActorsBulkPut, dbActorsStats, type ActorsQueryParams } from '../../dashboard/dbClient';
+import { dbActorsQuery, dbActorsGet, dbActorsPut, dbActorsDelete, dbActorsBulkPut, dbActorsBulkPurge, dbActorsStats, type ActorsQueryParams } from '../../dashboard/dbClient';
 
 export class ActorManager {
     private cache: Map<string, ActorRecord> = new Map();
     private isLoaded = false;
+    // 本实例已删除、待持久化的 id 墓碑：全量回写前合并存储键时跳过这些 id，
+    // 防止陈旧快照 + 存储残留把本实例刚删的演员复活（与 newWorks 全量回写保护同策略）
+    private localDeletedIds: Set<string> = new Set();
 
     /**
      * 初始化演员管理器，加载本地数据
@@ -233,21 +236,39 @@ export class ActorManager {
      */
     async deleteActor(id: string): Promise<boolean> {
         await this.initialize();
-        if (this.cache.has(id)) {
-            this.cache.delete(id);
-            await this.saveToStorage();
-            try { await dbActorsDelete(id); } catch {}
-            return true;
+        if (!this.cache.has(id)) {
+            // 缓存陈旧（该演员由其他上下文写入）时回查 IDB，保证删除不静默失败
+            try {
+                const r = await dbActorsGet(id);
+                if (r) this.cache.set(id, r);
+            } catch {}
         }
-        return false;
+        if (!this.cache.has(id)) {
+            return false;
+        }
+        this.cache.delete(id);
+        this.localDeletedIds.add(id);
+        await this.saveToStorage();
+        try { await dbActorsDelete(id); } catch {}
+        return true;
     }
 
     /**
      * 清空所有演员记录
      */
     async clearAllActors(): Promise<void> {
+        await this.initialize();
+        this.localDeletedIds = new Set(this.cache.keys());
         this.cache.clear();
-        await this.saveToStorage();
+        await this.saveToStorage(false);
+        // IDB 是主读取路径，须同步硬删，避免清空后列表仍显示旧数据
+        try {
+            const { items } = await dbActorsQuery({ offset: 0, limit: 100000 } as ActorsQueryParams);
+            const ids = items.map(i => i.id).filter(Boolean);
+            if (ids.length) await dbActorsBulkPurge(ids);
+        } catch (error) {
+            console.error('[Actor] Failed to purge IDB on clearAllActors:', error);
+        }
     }
 
     /**
@@ -302,14 +323,30 @@ export class ActorManager {
     /**
      * 保存数据到存储
      */
-    private async saveToStorage(): Promise<void> {
+    /**
+     * 全量回写 chrome.storage 兼容键。
+     * mergeRemote=true（默认）：回写前先把存储键中本实例缓存缺失、且未被本实例删除的
+     * 演员合并进来，防止本实例陈旧快照抹掉其他上下文（dashboard 多 tab / 内容脚本
+     * actorEnhancement 自动打标签）新写入的演员；replace 语义（importActors replace）
+     * 传 false 关闭合并。
+     */
+    private async saveToStorage(mergeRemote = true): Promise<void> {
         try {
+            if (mergeRemote) {
+                const stored = await getValue<Record<string, ActorRecord>>(STORAGE_KEYS.ACTOR_RECORDS, {});
+                for (const [id, actor] of Object.entries(stored)) {
+                    if (actor && !this.cache.has(id) && !this.localDeletedIds.has(id)) {
+                        this.cache.set(id, actor);
+                    }
+                }
+            }
             const actorsObject: Record<string, ActorRecord> = {};
             this.cache.forEach((actor, id) => {
                 actorsObject[id] = actor;
             });
             
             await setValue(STORAGE_KEYS.ACTOR_RECORDS, actorsObject);
+            this.localDeletedIds.clear();
         } catch (error) {
             console.error('[Actor] Failed to save to storage:', error);
             throw error;
@@ -366,7 +403,7 @@ export class ActorManager {
             this.cache.set(actor.id, actor);
         });
         
-        await this.saveToStorage();
+        await this.saveToStorage(mode !== 'replace');
         
         return { imported, updated, skipped };
     }
