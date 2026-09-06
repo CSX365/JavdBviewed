@@ -32,6 +32,16 @@ export function VideoTab({
 }: TabProps & { aiModel: string }) {
   return (
     <div className="flex flex-col gap-4">
+      <SettingSection title="详情页增强" description="影片详情页 UI 增强总开关">
+        <SettingToggleRow
+          id="enableVideoEnhancement"
+          label="启用详情页增强"
+          description="关闭后详情页不注入增强 UI；状态同步与数据行为不受影响"
+          checked={form.enableVideoEnhancement}
+          onChange={(v) => setToggle('enableVideoEnhancement', v)}
+        />
+      </SettingSection>
+
       <SettingSection title="演员名称标识">
         <SettingToggleRow
           id="veEnableActorNameMarks"
@@ -116,41 +126,31 @@ export function VideoTab({
         ) : null}
       </SettingSection>
 
-      <SettingSection title="状态标记增强" description="想看同步、115 推送后自动标记已看">
+      <SettingSection title="状态标记/数据行为" description="想看同步、115 推送后自动标记已看（数据行为，不受主开关约束）">
         <SettingToggleRow
-          id="enableVideoEnhancement"
-          label="启用状态标记增强"
-          checked={form.enableVideoEnhancement}
-          onChange={(v) => setToggle('enableVideoEnhancement', v)}
+          id="veEnableWantSync"
+          label="「想看」同步到本地番号库"
+          checked={form.veEnableWantSync}
+          onChange={(v) => setToggle('veEnableWantSync', v)}
         />
-        {form.enableVideoEnhancement ? (
-          <div id="videoEnhancementConfig" className="flex flex-col gap-1">
-            <SettingToggleRow
-              id="veEnableWantSync"
-              label="「想看」同步到本地番号库"
-              checked={form.veEnableWantSync}
-              onChange={(v) => setToggle('veEnableWantSync', v)}
-            />
-            <SettingToggleRow
-              id="veAutoMarkWatchedAfter115"
-              label="推送 115 后自动标记已看"
-              checked={form.veAutoMarkWatchedAfter115}
-              onChange={(v) => setToggle('veAutoMarkWatchedAfter115', v)}
-            />
-            {form.veAutoMarkWatchedAfter115 ? (
-              <div id="autoMarkWatchedConfig">
-                <SettingField id="veAutoMarkWatchedStars" label="自动标记星级">
-                  <SettingSelect
-                    id="veAutoMarkWatchedStars"
-                    value={String(form.veAutoMarkWatchedStars)}
-                    options={AUTO_MARK_STARS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                    onChange={(v) =>
-                      patchForm({ veAutoMarkWatchedStars: parseIntNum(v, form.veAutoMarkWatchedStars) })
-                    }
-                  />
-                </SettingField>
-              </div>
-            ) : null}
+        <SettingToggleRow
+          id="veAutoMarkWatchedAfter115"
+          label="推送 115 后自动标记已看"
+          checked={form.veAutoMarkWatchedAfter115}
+          onChange={(v) => setToggle('veAutoMarkWatchedAfter115', v)}
+        />
+        {form.veAutoMarkWatchedAfter115 ? (
+          <div id="autoMarkWatchedConfig">
+            <SettingField id="veAutoMarkWatchedStars" label="自动标记星级">
+              <SettingSelect
+                id="veAutoMarkWatchedStars"
+                value={String(form.veAutoMarkWatchedStars)}
+                options={AUTO_MARK_STARS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                onChange={(v) =>
+                  patchForm({ veAutoMarkWatchedStars: parseIntNum(v, form.veAutoMarkWatchedStars) })
+                }
+              />
+            </SettingField>
           </div>
         ) : null}
       </SettingSection>

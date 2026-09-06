@@ -1314,14 +1314,15 @@ test.describe('settings React pages in Chromium', () => {
       await translationCard.hover();
       await expect(page.locator('#traditionalApiKey')).toHaveCount(0);
 
-      const statusCard = page.locator('[data-enhancement-feature="状态标记增强"]');
-      await statusCard.hover();
-      const statusToggle = statusCard.locator('#enableVideoEnhancement');
-      if (!await statusToggle.isChecked()) {
-        await statusToggle.locator('xpath=ancestor::label[1]').click();
+      const mainCard = page.locator('[data-enhancement-feature="详情页增强"]');
+      await mainCard.hover();
+      const mainToggle = mainCard.locator('#enableVideoEnhancement');
+      if (!await mainToggle.isChecked()) {
+        await mainToggle.locator('xpath=ancestor::label[1]').click();
       }
+      // 主开关与数据行为分属不同卡片：状态选择器位于「状态标记/数据行为」
       const starSelect = page.locator('#veAutoMarkWatchedStars');
-      await expect(statusToggle).toBeChecked();
+      await expect(mainToggle).toBeChecked();
       await expect.poll(async () => starSelect.count()).toBe(1);
       await expect(starSelect).toBeVisible();
       await expect(starSelect.locator('option')).toHaveCount(6);
