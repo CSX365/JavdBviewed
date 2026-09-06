@@ -7,6 +7,7 @@
 // 键盘快捷键系统
 
 import { log } from '../contentState';
+import { isShortcutMatch } from './shortcutMatch';
 import { showToast } from '../../platform/browser/toast';
 import { contentFilterManager } from '../contentFilter';
 
@@ -33,9 +34,10 @@ export class KeyboardShortcutsManager {
   private shortcuts: Map<string, ShortcutAction> = new Map();
   private helpPanel: HTMLElement | null = null;
   private isInitialized = false;
-  private pressedKeys: Set<string> = new Set();
+  private readonly onKeyDown: (e: KeyboardEvent) => void;
 
   constructor(config: Partial<KeyboardShortcutsConfig> = {}) {
+    this.onKeyDown = this.handleKeyDown.bind(this);
     this.config = {
       enabled: true,
       showHelp: true,
@@ -254,16 +256,8 @@ export class KeyboardShortcutsManager {
    * 设置事件监听
    */
   private setupEventListeners(): void {
-    document.addEventListener('keydown', this.handleKeyDown.bind(this));
-    document.addEventListener('keyup', this.handleKeyUp.bind(this));
-    
-    // 防止在输入框中触发快捷键
-    document.addEventListener('keydown', (e) => {
-      const target = e.target as HTMLElement;
-      if (this.isInputElement(target)) {
-        return;
-      }
-    });
+    // 输入框内的拦截在 handleKeyDown 内处理
+    document.addEventListener('keydown', this.onKeyDown);
   }
 
   /**
@@ -275,31 +269,7 @@ export class KeyboardShortcutsManager {
       return;
     }
 
-    // 记录按下的键
-    this.pressedKeys.add(e.code);
-    this.pressedKeys.add(e.key);
-
-    // 添加修饰键
-    if (e.ctrlKey) this.pressedKeys.add('Ctrl');
-    if (e.shiftKey) this.pressedKeys.add('Shift');
-    if (e.altKey) this.pressedKeys.add('Alt');
-    if (e.metaKey) this.pressedKeys.add('Meta');
-
-    // 检查是否匹配快捷键
     this.checkShortcuts(e);
-  }
-
-  /**
-   * 处理按键释放
-   */
-  private handleKeyUp(e: KeyboardEvent): void {
-    this.pressedKeys.delete(e.code);
-    this.pressedKeys.delete(e.key);
-    
-    if (!e.ctrlKey) this.pressedKeys.delete('Ctrl');
-    if (!e.shiftKey) this.pressedKeys.delete('Shift');
-    if (!e.altKey) this.pressedKeys.delete('Alt');
-    if (!e.metaKey) this.pressedKeys.delete('Meta');
   }
 
   /**
@@ -309,7 +279,7 @@ export class KeyboardShortcutsManager {
     for (const [, shortcut] of this.shortcuts) {
       if (!shortcut.enabled) continue;
 
-      if (this.isShortcutMatch(shortcut.keys)) {
+      if (isShortcutMatch(shortcut.keys, e)) {
         e.preventDefault();
         e.stopPropagation();
         
@@ -325,21 +295,10 @@ export class KeyboardShortcutsManager {
   }
 
   /**
-   * 检查快捷键是否匹配
-   */
-  private isShortcutMatch(keys: string[]): boolean {
-    if (keys.length !== this.pressedKeys.size) {
-      return false;
-    }
-
-    return keys.every(key => this.pressedKeys.has(key));
-  }
-
-  /**
    * 获取快捷键标识
    */
   private getShortcutKey(keys: string[]): string {
-    return keys.sort().join('+');
+    return [...keys].sort().join('+');
   }
 
   /**
@@ -689,8 +648,7 @@ export class KeyboardShortcutsManager {
    * 销毁快捷键系统
    */
   destroy(): void {
-    document.removeEventListener('keydown', this.handleKeyDown.bind(this));
-    document.removeEventListener('keyup', this.handleKeyUp.bind(this));
+    document.removeEventListener('keydown', this.onKeyDown);
 
     if (this.helpPanel) {
       this.helpPanel.remove();
@@ -698,7 +656,6 @@ export class KeyboardShortcutsManager {
     }
 
     this.shortcuts.clear();
-    this.pressedKeys.clear();
     this.isInitialized = false;
   }
 }
