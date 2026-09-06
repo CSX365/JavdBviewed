@@ -4,6 +4,7 @@
  * @module features/telemetry
  */
 import type { TelemetryPayload } from './types';
+import { isVideoEnhancementMainOn, isVideoEnhancementSubOn } from '../../videoDetail/videoEnhancementGate';
 
 export type TelemetryFeatureKey = keyof TelemetryPayload['features'];
 export type TelemetryFeatureCategory =
@@ -34,11 +35,11 @@ export interface TelemetryFeatureCatalogItem {
 }
 
 function isExternalEntryPanelActive(settings: any): boolean {
-  return settings?.videoEnhancement?.enableExternalEntryPanel !== false;
+  return isVideoEnhancementSubOn(settings, 'enableExternalEntryPanel');
 }
 
 function isVideoEnhancementEnabled(settings: any): boolean {
-  return settings?.videoEnhancement?.enabled === true;
+  return isVideoEnhancementMainOn(settings);
 }
 
 function isListEnhancementEnabled(settings: any): boolean {
@@ -125,63 +126,63 @@ export const TELEMETRY_FEATURE_CATALOG = [
     label: '外部搜索入口',
     category: 'video',
     order: 110,
-    select: (settings) => isExternalEntryPanelActive(settings) && settings?.videoEnhancement?.enableExternalSearch !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableExternalSearch'),
   },
   {
     key: 'onlineAvailabilityEnabled',
     label: '在线可看检测',
     category: 'video',
     order: 120,
-    select: (settings) => isExternalEntryPanelActive(settings) && settings?.videoEnhancement?.enableOnlineAvailability !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableOnlineAvailability'),
   },
   {
     key: 'subtitleSearchEnabled',
     label: '字幕搜索',
     category: 'video',
     order: 130,
-    select: (settings) => isExternalEntryPanelActive(settings) && settings?.videoEnhancement?.enableSubtitleSearch !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableSubtitleSearch'),
   },
   {
     key: 'fc2BreakerEnabled',
     label: 'FC2 增强',
     category: 'video',
     order: 140,
-    select: (settings) => settings?.videoEnhancement?.enableFC2Breaker !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableFC2Breaker'),
   },
   {
     key: 'reviewBreakerEnabled',
     label: '评论解锁',
     category: 'video',
     order: 150,
-    select: (settings) => isVideoEnhancementEnabled(settings) && settings?.videoEnhancement?.enableReviewBreaker === true,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableReviewBreaker'),
   },
   {
     key: 'relatedListsEnabled',
     label: '相关清单',
     category: 'video',
     order: 160,
-    select: (settings) => isVideoEnhancementEnabled(settings) && settings?.videoEnhancement?.enableRelatedLists !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableRelatedLists'),
   },
   {
     key: 'actorRemarksEnabled',
     label: '演员备注',
     category: 'actor',
     order: 170,
-    select: (settings) => isVideoEnhancementEnabled(settings) && settings?.videoEnhancement?.enableActorRemarks === true,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableActorRemarks'),
   },
   {
     key: 'actorNameMarksEnabled',
     label: '演员名称标识',
     category: 'actor',
     order: 180,
-    select: (settings) => settings?.videoEnhancement?.enableActorNameMarks !== false,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableActorNameMarks'),
   },
   {
     key: 'videoFavoriteRatingEnabled',
     label: '影片收藏评分',
     category: 'video',
     order: 190,
-    select: (settings) => isVideoEnhancementEnabled(settings) && settings?.videoEnhancement?.enableVideoFavoriteRating === true,
+    select: (settings) => isVideoEnhancementSubOn(settings, 'enableVideoFavoriteRating'),
   },
   {
     key: 'wantSyncEnabled',

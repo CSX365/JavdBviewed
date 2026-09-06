@@ -24,6 +24,7 @@ import {
 import { updateFaviconForStatus } from '../videoStatus';
 import { initOrchestrator } from '../../apps/content/orchestrator';
 import { showEnhancementLoading } from '../../platform/browser/enhancementLoadingIndicator';
+import { isVideoEnhancementMainOn, isVideoEnhancementSubOn } from './videoEnhancementGate';
 import { renderDetailSearchLinks } from '../externalSearch';
 import { renderDetailLibraryStatus } from '../embyLibrary/content/statusBadges';
 import { ensureDetailEnhancementPanel } from '../detailEnhancementPanel';
@@ -396,13 +397,17 @@ type VideoDetailTaskBlueprint = {
 
 export function getVideoDetailTaskBlueprints(settings: any): VideoDetailTaskBlueprint[] {
     const blueprints: VideoDetailTaskBlueprint[] = [];
-    const enableVideoEnhancement = settings?.videoEnhancement?.enabled === true;
+    const enableVideoEnhancement = isVideoEnhancementMainOn(settings);
     const enableMultiSource = settings?.dataEnhancement?.enableMultiSource;
     const enableTranslation = settings?.dataEnhancement?.enableTranslation;
     const enableCurrentTitleTranslation = enableTranslation && (settings?.translation?.targets ? settings.translation.targets.currentTitle !== false : true);
-    const enableActorNameMarks = (settings as any)?.videoEnhancement?.enableActorNameMarks !== false;
-    const enableRelatedLists = enableVideoEnhancement && (settings as any)?.videoEnhancement?.enableRelatedLists !== false;
-    const enableLocalListInSourceModal = enableVideoEnhancement && (settings as any)?.videoEnhancement?.enableLocalListInSourceModal !== false;
+    const enableActorNameMarks = isVideoEnhancementSubOn(settings, 'enableActorNameMarks');
+    const enableRelatedLists = isVideoEnhancementSubOn(settings, 'enableRelatedLists');
+    const enableLocalListInSourceModal = isVideoEnhancementSubOn(settings, 'enableLocalListInSourceModal');
+    const enableActorRemarks = isVideoEnhancementSubOn(settings, 'enableActorRemarks');
+    const enableReviewBreaker = isVideoEnhancementSubOn(settings, 'enableReviewBreaker');
+    const enableVideoFavoriteRating = isVideoEnhancementSubOn(settings, 'enableVideoFavoriteRating');
+    const enableFC2Breaker = isVideoEnhancementSubOn(settings, 'enableFC2Breaker');
     const actorRemarksTaskTimeoutMs = getActorRemarksTaskTimeoutMs(settings as any);
     const schedulingMode = normalizeVideoEnhancementSchedulingMode(
         settings?.videoEnhancement?.schedulingMode,
@@ -416,20 +421,24 @@ export function getVideoDetailTaskBlueprints(settings: any): VideoDetailTaskBlue
         enableCurrentTitleTranslation,
         translationTargets: settings?.translation?.targets,
         enableActorNameMarks,
-        enableActorRemarks: (settings as any)?.videoEnhancement?.enableActorRemarks === true,
+        enableActorRemarks,
         enableRelatedLists,
         enableLocalListInSourceModal,
     });
 
     blueprints.push({ phase: 'critical', label: 'videoStatus:initialSync', priority: 12, visibilityPolicy: 'background_allowed' });
-    if (enableVideoEnhancement || enableMultiSource || enableCurrentTitleTranslation) {
+    if (enableVideoEnhancement) {
         // clickEnhancement 无独立 managed 执行路径，不预注册虚假 label
         blueprints.push(
             { phase: 'high', label: 'videoEnhancement:initCore', priority: 8, visibilityPolicy: 'background_allowed', dependsOn: ['videoStatus:initialSync'] },
             { phase: 'deferred', label: 'videoEnhancement:loadData', timeout: getEnhancedDataTaskTimeoutMs(settings), dependsOn: ['videoStatus:initialSync'] },
             { phase: 'idle', label: 'videoEnhancement:runCover', dependsOn: ['videoStatus:initialSync'] },
             { phase: 'idle', label: 'videoEnhancement:runTitle', dependsOn: ['videoStatus:initialSync'] },
-            { phase: 'idle', label: 'videoEnhancement:runFC2Breaker', dependsOn: ['videoStatus:initialSync'] },
+        );
+        if (enableFC2Breaker) {
+            blueprints.push({ phase: 'idle', label: 'videoEnhancement:runFC2Breaker', dependsOn: ['videoStatus:initialSync'] });
+        }
+        blueprints.push(
             { phase: 'high', label: 'videoEnhancement:finish', priority: 8, visibilityPolicy: 'background_allowed', dependsOn: ['videoEnhancement:loadData'] },
         );
     }
@@ -438,11 +447,11 @@ export function getVideoDetailTaskBlueprints(settings: any): VideoDetailTaskBlue
         blueprints.push({ phase: 'deferred', label: 'videoEnhancement:titleTranslateBtn', timeout: 5000, dependsOn: ['videoStatus:initialSync'] });
     }
 
-    if (enableVideoEnhancement && (settings as any)?.videoEnhancement?.enableActorRemarks === true) {
+    if (enableActorRemarks) {
         blueprints.push({ phase: 'idle', label: 'actorRemarks:run', timeout: actorRemarksTaskTimeoutMs, dependsOn: ['videoStatus:initialSync'] });
     }
 
-    if (enableVideoEnhancement && (settings as any)?.videoEnhancement?.enableReviewBreaker === true) {
+    if (enableReviewBreaker) {
         blueprints.push({ phase: 'idle', label: 'videoEnhancement:runReviewBreaker', dependsOn: ['videoStatus:initialSync'] });
     }
 
@@ -450,7 +459,7 @@ export function getVideoDetailTaskBlueprints(settings: any): VideoDetailTaskBlue
         blueprints.push({ phase: 'idle', label: 'videoEnhancement:runRelatedLists', dependsOn: ['videoStatus:initialSync', 'videoEnhancement:initCore'] });
     }
 
-    if (enableVideoEnhancement && (settings as any)?.videoEnhancement?.enableVideoFavoriteRating === true) {
+    if (enableVideoFavoriteRating) {
         blueprints.push({ phase: 'high', label: 'videoFavoriteRating:init', priority: 4, visibilityPolicy: heavyTaskVisibilityPolicy, dependsOn: ['videoStatus:initialSync'] });
     }
 
@@ -621,11 +630,10 @@ export async function handleVideoDetailPage(): Promise<void> {
 
         const endSearchLinksSpan = startContentPerformanceSpan(CONTENT_PERFORMANCE_DIAGNOSTIC_LABELS.videoDetailSearchLinks);
         try {
-            const videoEnhancement = (STATE.settings as any)?.videoEnhancement || {};
             renderDetailSearchLinks(videoId, STATE.settings?.searchEngines || [], {
-                enabled: videoEnhancement.enableExternalEntryPanel !== false,
-                showExternalSearch: videoEnhancement.enableExternalSearch !== false,
-                showSubtitleSearch: videoEnhancement.enableSubtitleSearch !== false,
+                enabled: isVideoEnhancementSubOn(STATE.settings, 'enableExternalEntryPanel'),
+                showExternalSearch: isVideoEnhancementSubOn(STATE.settings, 'enableExternalSearch'),
+                showSubtitleSearch: isVideoEnhancementSubOn(STATE.settings, 'enableSubtitleSearch'),
             });
         } catch (e) {
             log('renderDetailSearchLinks failed:', e as any);
@@ -647,7 +655,7 @@ export async function handleVideoDetailPage(): Promise<void> {
     }
 
     try {
-        const shouldShowIndicator = (STATE.settings as any)?.videoEnhancement?.showLoadingIndicator !== false;
+        const shouldShowIndicator = isVideoEnhancementSubOn(STATE.settings, 'showLoadingIndicator');
         if (shouldShowIndicator) {
             showEnhancementLoading('video');
         }
@@ -718,36 +726,40 @@ export async function handleVideoDetailPage(): Promise<void> {
                 STATE.settings?.videoEnhancement?.schedulingMode,
             );
             const heavyTaskVisibilityPolicy = getAutomaticHeavyTaskVisibilityPolicy(schedulingMode);
+            const mainOn = isVideoEnhancementMainOn(STATE.settings);
             log('[VideoDetail] scheduling enhancement tasks', {
                 schedulingMode,
+                enableVideoEnhancement: mainOn,
                 enableCurrentTitleTranslation: STATE.settings?.dataEnhancement?.enableTranslation && (STATE.settings?.translation?.targets ? STATE.settings.translation.targets.currentTitle !== false : true),
-                enableActorNameMarks: (STATE.settings as any)?.videoEnhancement?.enableActorNameMarks !== false,
-                enableActorRemarks: (STATE.settings as any)?.videoEnhancement?.enableActorRemarks === true,
-                enableReviewBreaker: (STATE.settings as any)?.videoEnhancement?.enableReviewBreaker === true,
-                enableRelatedLists: (STATE.settings as any)?.videoEnhancement?.enabled === true
-                    && (STATE.settings as any)?.videoEnhancement?.enableRelatedLists !== false,
-                enableVideoFavoriteRating: (STATE.settings as any)?.videoEnhancement?.enableVideoFavoriteRating === true,
-                enableLocalListInSourceModal: (STATE.settings as any)?.videoEnhancement?.enabled === true
-                    && (STATE.settings as any)?.videoEnhancement?.enableLocalListInSourceModal !== false,
+                enableActorNameMarks: isVideoEnhancementSubOn(STATE.settings, 'enableActorNameMarks'),
+                enableActorRemarks: isVideoEnhancementSubOn(STATE.settings, 'enableActorRemarks'),
+                enableReviewBreaker: isVideoEnhancementSubOn(STATE.settings, 'enableReviewBreaker'),
+                enableRelatedLists: isVideoEnhancementSubOn(STATE.settings, 'enableRelatedLists'),
+                enableVideoFavoriteRating: isVideoEnhancementSubOn(STATE.settings, 'enableVideoFavoriteRating'),
+                enableLocalListInSourceModal: isVideoEnhancementSubOn(STATE.settings, 'enableLocalListInSourceModal'),
             });
 
-            initOrchestrator.add('high', async () => {
-                await videoDetailEnhancer.initCore();
-            }, {
-                label: 'videoEnhancement:initCore',
-                priority: 8,
-                visibilityPolicy: 'background_allowed',
-                dependsOn: ['videoStatus:initialSync'],
-                delayMs: 50,
-            });
+            if (mainOn) {
+                initOrchestrator.add('high', async () => {
+                    await videoDetailEnhancer.initCore();
+                }, {
+                    label: 'videoEnhancement:initCore',
+                    priority: 8,
+                    visibilityPolicy: 'background_allowed',
+                    dependsOn: ['videoStatus:initialSync'],
+                    delayMs: 50,
+                });
+            }
 
-            initOrchestrator.add('deferred', async () => {
-                await videoDetailEnhancer.loadEnhancedData();
-            }, {
-                label: 'videoEnhancement:loadData',
-                timeout: getEnhancedDataTaskTimeoutMs(STATE.settings),
-                dependsOn: ['videoStatus:initialSync'],
-            });
+            if (mainOn) {
+                initOrchestrator.add('deferred', async () => {
+                    await videoDetailEnhancer.loadEnhancedData();
+                }, {
+                    label: 'videoEnhancement:loadData',
+                    timeout: getEnhancedDataTaskTimeoutMs(STATE.settings),
+                    dependsOn: ['videoStatus:initialSync'],
+                });
+            }
 
             if (STATE.settings?.dataEnhancement?.enableTranslation && (STATE.settings?.translation?.targets ? STATE.settings.translation.targets.currentTitle !== false : true)) {
                 initOrchestrator.add('deferred', async () => {
@@ -759,43 +771,51 @@ export async function handleVideoDetailPage(): Promise<void> {
                 });
             }
 
-            initOrchestrator.add('idle', async () => {
-                await videoDetailEnhancer.runCover();
-            }, {
-                label: 'videoEnhancement:runCover',
-                idle: true,
-                idleTimeout: 5000,
-                dependsOn: ['videoStatus:initialSync'],
-            });
+            if (mainOn) {
+                initOrchestrator.add('idle', async () => {
+                    await videoDetailEnhancer.runCover();
+                }, {
+                    label: 'videoEnhancement:runCover',
+                    idle: true,
+                    idleTimeout: 5000,
+                    dependsOn: ['videoStatus:initialSync'],
+                });
+            }
 
-            initOrchestrator.add('idle', async () => {
-                await videoDetailEnhancer.runTitle();
-            }, {
-                label: 'videoEnhancement:runTitle',
-                idle: true,
-                idleTimeout: 5000,
-                dependsOn: ['videoStatus:initialSync'],
-            });
+            if (mainOn) {
+                initOrchestrator.add('idle', async () => {
+                    await videoDetailEnhancer.runTitle();
+                }, {
+                    label: 'videoEnhancement:runTitle',
+                    idle: true,
+                    idleTimeout: 5000,
+                    dependsOn: ['videoStatus:initialSync'],
+                });
+            }
 
-            initOrchestrator.add('idle', async () => {
-                await videoDetailEnhancer.runFC2Breaker();
-            }, {
-                label: 'videoEnhancement:runFC2Breaker',
-                idle: true,
-                idleTimeout: 5000,
-                dependsOn: ['videoStatus:initialSync'],
-            });
+            if (mainOn && isVideoEnhancementSubOn(STATE.settings, 'enableFC2Breaker')) {
+                initOrchestrator.add('idle', async () => {
+                    await videoDetailEnhancer.runFC2Breaker();
+                }, {
+                    label: 'videoEnhancement:runFC2Breaker',
+                    idle: true,
+                    idleTimeout: 5000,
+                    dependsOn: ['videoStatus:initialSync'],
+                });
+            }
 
-            initOrchestrator.add('high', () => {
-                videoDetailEnhancer.finish();
-            }, {
-                label: 'videoEnhancement:finish',
-                priority: 8,
-                visibilityPolicy: 'background_allowed',
-                dependsOn: ['videoEnhancement:loadData'],
-            });
+            if (mainOn) {
+                initOrchestrator.add('high', () => {
+                    videoDetailEnhancer.finish();
+                }, {
+                    label: 'videoEnhancement:finish',
+                    priority: 8,
+                    visibilityPolicy: 'background_allowed',
+                    dependsOn: ['videoEnhancement:loadData'],
+                });
+            }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enableReviewBreaker === true) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableReviewBreaker')) {
                 initOrchestrator.add('idle', async () => {
                     await videoDetailEnhancer.runReviewBreaker();
                 }, {
@@ -806,7 +826,7 @@ export async function handleVideoDetailPage(): Promise<void> {
                 });
             }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enabled === true && (STATE.settings as any)?.videoEnhancement?.enableRelatedLists !== false) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableRelatedLists')) {
                 initOrchestrator.add('idle', async () => {
                     await videoDetailEnhancer.runRelatedLists();
                 }, {
@@ -817,7 +837,7 @@ export async function handleVideoDetailPage(): Promise<void> {
                 });
             }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enableActorRemarks === true) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableActorRemarks')) {
                 initOrchestrator.add('idle', async () => {
                     await runActorRemarksQuick();
                 }, {
@@ -829,11 +849,11 @@ export async function handleVideoDetailPage(): Promise<void> {
                 });
             }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enableActorNameMarks !== false) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableActorNameMarks')) {
                 scheduleMarkActorsOnPage(0, heavyTaskVisibilityPolicy);
             }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enableVideoFavoriteRating === true) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableVideoFavoriteRating')) {
                 initOrchestrator.add('high', async () => {
                     await videoFavoriteRatingEnhancer.init();
                 }, {
@@ -845,8 +865,7 @@ export async function handleVideoDetailPage(): Promise<void> {
                 });
             }
 
-            if ((STATE.settings as any)?.videoEnhancement?.enabled === true
-                && (STATE.settings as any)?.videoEnhancement?.enableLocalListInSourceModal !== false) {
+            if (isVideoEnhancementSubOn(STATE.settings, 'enableLocalListInSourceModal')) {
                 initOrchestrator.add('idle', async () => {
                     await localListInSourceModalEnhancer.init();
                 }, {
@@ -894,7 +913,7 @@ export async function handleVideoDetailPage(): Promise<void> {
 // - 若为黑名单（blacklisted = true）则标记为红色并添加删除线
 async function markActorsOnPage(): Promise<void> {
     try {
-        if ((STATE.settings as any)?.videoEnhancement?.enableActorNameMarks === false) return;
+        if (!isVideoEnhancementSubOn(STATE.settings, 'enableActorNameMarks')) return;
         const endSetupQuerySpan = startContentPerformanceSpan(CONTENT_PERFORMANCE_DIAGNOSTIC_LABELS.actorMarksQuery);
         let subscriptions;
         try {
@@ -1023,7 +1042,7 @@ export function scheduleMarkActorsOnPage(
 // 轻量版“演员备注”注入（面板模式，默认关闭，通过 settings.videoEnhancement.enableActorRemarks 开启）
 export async function runActorRemarksQuick(timeoutMs?: number): Promise<void> {
     try {
-        const enabled = ((STATE.settings as any)?.videoEnhancement?.enableActorRemarks === true);
+        const enabled = isVideoEnhancementSubOn(STATE.settings, 'enableActorRemarks');
         if (!enabled) return;
 
         const taskTimeoutMs = typeof timeoutMs === 'number' && timeoutMs > 0

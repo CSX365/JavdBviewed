@@ -6,6 +6,7 @@
 // 影片页收藏与评分功能
 
 import './favoriteRating.css';
+import { isVideoEnhancementSubOn } from './videoEnhancementGate';
 import { STATE, log } from '../contentState';
 import { extractVideoIdFromPage } from '../../platform/browser';
 import { showToast } from '../../platform/browser/toast';
@@ -30,7 +31,7 @@ export class VideoFavoriteRatingEnhancer {
       const steps: Array<() => Promise<void>> = [
         async () => {
       // 检查是否启用
-      if (!STATE.settings?.videoEnhancement?.enableVideoFavoriteRating) {
+      if (!isVideoEnhancementSubOn(STATE.settings, 'enableVideoFavoriteRating')) {
         log('[VideoFavoriteRating] Feature disabled in settings');
         throw new Error('video-favorite-rating-disabled');
       }

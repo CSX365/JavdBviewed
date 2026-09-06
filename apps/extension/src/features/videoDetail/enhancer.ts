@@ -18,6 +18,7 @@ import { saveSubtaskDetail, yieldToMainThread } from '../../platform/tasks';
 import { initOrchestrator } from '../../apps/content/orchestrator';
 import { getUserTriggeredHeavyTaskScheduling } from './schedulingMode';
 import { showEnhancementDone } from '../../platform/browser/enhancementLoadingIndicator';
+import { isVideoEnhancementSubOn } from './videoEnhancementGate';
 import { getJavdbTheme, isDarkTheme, type JavdbTheme } from '../../platform/browser/domUtils';
 import { addTaskUrlsV2 } from '../drive115/router';
 import {
@@ -102,15 +103,18 @@ export class VideoDetailEnhancer {
     try {
       const cfg = STATE.settings?.videoEnhancement;
       if (!cfg) return;
-      this.options.enableCoverImage = cfg.enableCoverImage !== false;
-      this.options.enableTranslation = cfg.enableTranslation !== false;
-      this.options.showLoadingIndicator = cfg.showLoadingIndicator !== false;
-      this.options.enableReviewBreaker = cfg.enableReviewBreaker === true;
-      this.options.enableFC2Breaker = cfg.enableFC2Breaker === true;
+      // 子开关统一走 videoEnhancementGate resolver（防御纵深：与调度路径同源）
+      this.options.enableCoverImage = isVideoEnhancementSubOn(STATE.settings, 'enableCoverImage');
+      // 标题翻译是跨节功能：只直读 dataEnhancement，不受主开关约束
+      this.options.enableTranslation = !!STATE.settings?.dataEnhancement?.enableTranslation;
+      this.options.showLoadingIndicator = isVideoEnhancementSubOn(STATE.settings, 'showLoadingIndicator');
+      this.options.enableReviewBreaker = isVideoEnhancementSubOn(STATE.settings, 'enableReviewBreaker');
+      this.options.enableFC2Breaker = isVideoEnhancementSubOn(STATE.settings, 'enableFC2Breaker');
+      // 评论区内层子开关（受 enableReviewEnhancement 节门控），不进统一登记表
       this.options.enableReviewEnhancement = cfg.enableReviewEnhancement === true;
       this.options.enableReviewMagnetLinkify = cfg.enableReviewMagnetLinkify !== false;
       this.options.enableReviewPush115 = cfg.enableReviewPush115 !== false;
-      this.options.enableRelatedLists = (cfg as any).enableRelatedLists !== false;
+      this.options.enableRelatedLists = isVideoEnhancementSubOn(STATE.settings, 'enableRelatedLists');
       // 🆕 从列表增强配置中读取视频预览设置（详情页专用）
       const listCfg = STATE.settings?.listEnhancement;
       this.options.enableVideoPreview = listCfg?.enableVideoPreview !== false && listCfg?.enableVideoPreviewDetail !== false;

@@ -1,4 +1,5 @@
 import { STATE } from '../../../../state';
+import { isVideoEnhancementSubOn } from '../../../../../features/videoDetail/videoEnhancementGate';
 import type { ExtensionSettings } from '../../../../../types';
 import { getVideoDetailTaskBlueprints } from '../../../../../features/videoDetail';
 import { getEffectiveEmbyMatchUrls } from '../../../../../features/embyEnhancement/domain/matchUrls';
@@ -89,7 +90,7 @@ export function buildDesignTasks(doGetSettings: () => ExtensionSettings): Orches
     pushTask({ phase: 'critical', label: 'actorEnhancement:actionButtons', priority: 9, visibilityPolicy: 'background_allowed', source: 'actor', enabled: (settings.actorEnhancement as any)?.enableActionButtons !== false });
   }
 
-  const actorRemarksEnabled = (settings.videoEnhancement as any)?.enabled === true && (settings.videoEnhancement as any)?.enableActorRemarks === true;
+  const actorRemarksEnabled = isVideoEnhancementSubOn(settings, 'enableActorRemarks');
   if (actorRemarksEnabled) {
     pushTask({ phase: 'idle', label: 'actorRemarks:actorPage', timeout: Number((settings.videoEnhancement as any)?.actorRemarksTaskTimeoutSeconds || 10) * 1000, source: 'actor', enabled: true });
   }

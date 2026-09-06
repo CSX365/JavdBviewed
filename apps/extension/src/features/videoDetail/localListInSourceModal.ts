@@ -4,6 +4,7 @@
  * @module features/videoDetail
  */
 import './localListInSourceModal.css';
+import { isVideoEnhancementSubOn } from './videoEnhancementGate';
 import { STATE, log } from '../contentState';
 import { extractVideoIdFromPage } from '../../platform/browser';
 import { sendRuntimeMessage } from '../../platform/browser/runtimeMessages';
@@ -72,8 +73,7 @@ export class LocalListInSourceModalEnhancer {
   }
 
   private isFeatureEnabled(): boolean {
-    const ve = STATE.settings?.videoEnhancement as { enabled?: boolean; enableLocalListInSourceModal?: boolean } | undefined;
-    return ve?.enabled === true && ve?.enableLocalListInSourceModal !== false;
+    return isVideoEnhancementSubOn(STATE.settings, 'enableLocalListInSourceModal');
   }
 
   private ensureStyles(): void {

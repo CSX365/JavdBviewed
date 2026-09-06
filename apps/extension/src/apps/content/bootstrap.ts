@@ -28,6 +28,7 @@ import { anchorOptimizationManager } from '../../features/anchorOptimization/con
 import { listEnhancementManager } from '../../features/listEnhancement';
 import { actorEnhancementManager, actorQuickActionsManager } from '../../features/actorEnhancement';
 import { isActorEnhancementEnabled } from '../../features/actorEnhancement/actorEnhancementGate';
+import { isVideoEnhancementSubOn } from '../../features/videoDetail/videoEnhancementGate';
 import { embyEnhancementManager } from '../../features/embyEnhancement/content';
 import { exposePreviewVolumeDebug, installPreviewVolumeControl } from '../../features/previews';
 import { initOrchestrator, type InitPhase } from './orchestrator';
@@ -111,9 +112,8 @@ function isCurrentPageMatchedByEmby(settings: any): boolean {
 
 export async function runActorRemarksOnActorPage(settings: any, timeoutMs?: number): Promise<void> {
     try {
-        // 门控只用自身开关：设置页中「演员备注」是独立 section，
-        // 不应再依赖「状态标记增强」主开关（此前双重门控导致只开子开关时完全无效果）
-        const enabled = settings?.videoEnhancement?.enableActorRemarks === true;
+        // 门控统一走 videoEnhancementGate resolver（主开关 + 自身开关，offByDefault）
+        const enabled = isVideoEnhancementSubOn(settings, 'enableActorRemarks');
         if (!enabled) return;
 
         const taskTimeoutMs = typeof timeoutMs === 'number' && timeoutMs > 0
@@ -220,24 +220,25 @@ async function initialize(): Promise<void> {
             normalizeVideoEnhancementSchedulingMode((settings.videoEnhancement as any)?.schedulingMode),
         );
         preregisterBlueprints.push(...getVideoDetailTaskBlueprints(settings as any));
-        if ((settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
+        if (isVideoEnhancementSubOn(settings, 'showLoadingIndicator')) {
             preregisterBlueprints.push({ phase: 'critical', label: 'enhancementUI:showLoadingIndicator', priority: 13, visibilityPolicy: 'background_allowed' });
         }
         preregisterBlueprints.push(
             { phase: 'idle', label: 'drive115:init:video', dependsOn: ['videoStatus:initialSync'] },
             { phase: 'idle', label: 'insights:collector', visibilityPolicy: heavyTaskVisibilityPolicy, dependsOn: ['videoStatus:initialSync'] },
         );
-        if ((settings.videoEnhancement as any)?.enableActorQuickActions !== false) {
+        if (isVideoEnhancementSubOn(settings, 'enableActorQuickActions')) {
             preregisterBlueprints.push({ phase: 'high', label: 'actorQuickActions:init', priority: 6, visibilityPolicy: 'background_allowed', dependsOn: ['videoStatus:initialSync'] });
         }
     }
 
     if (isActorPage) {
-        if ((settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
+        // 与下方实际显示保持一致：仅演员增强启用且指示器子开关开启时显示，防止指示器卡死
+        if (isActorEnhancementEnabled(settings) && (settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
             preregisterBlueprints.push({ phase: 'critical', label: 'enhancementUI:showLoadingIndicator', priority: 13, visibilityPolicy: 'background_allowed' });
         }
-        // 与 runActorRemarksOnActorPage 门控保持一致：只用 enableActorRemarks 自身开关
-        const enabledActorRemarks = (settings as any)?.videoEnhancement?.enableActorRemarks === true;
+        // 与 runActorRemarksOnActorPage 门控保持一致：统一走 resolver
+        const enabledActorRemarks = isVideoEnhancementSubOn(settings, 'enableActorRemarks');
         if (enabledActorRemarks) {
             preregisterBlueprints.push({ phase: 'idle', label: 'actorRemarks:actorPage', timeout: getActorRemarksTaskTimeoutMs(settings as any) });
         }
@@ -313,14 +314,14 @@ async function initialize(): Promise<void> {
     }
 
     const isCurrentVideoPage = window.location.pathname.startsWith('/v/');
-    if (isCurrentVideoPage && (settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
+    if (isCurrentVideoPage && isVideoEnhancementSubOn(settings, 'showLoadingIndicator')) {
         showEnhancementLoading('video');
         initOrchestrator.add('critical', () => {
             showEnhancementLoading('video');
         }, { label: 'enhancementUI:showLoadingIndicator', priority: 13, visibilityPolicy: 'background_allowed' });
     }
 
-    if (isActorPage && (settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
+    if (isActorPage && isActorEnhancementEnabled(settings) && (settings.videoEnhancement as any)?.showLoadingIndicator !== false) {
         showEnhancementLoading('actor');
         initOrchestrator.add('critical', () => {
             showEnhancementLoading('actor');
@@ -417,10 +418,10 @@ async function initialize(): Promise<void> {
 
     // 页面类型判断
 
-    // 演员页：演员备注（受主开关控制）
+    // 演员页：演员备注（统一走 resolver：主开关 + 自身开关）
     // 优化：缩短延迟到500ms
     try {
-        const enabledActorRemarks = (settings as any)?.videoEnhancement?.enableActorRemarks === true;
+        const enabledActorRemarks = isVideoEnhancementSubOn(settings, 'enableActorRemarks');
         if (enabledActorRemarks && isActorPage) {
             const FLAG = '__jdb_actorRemarks_actorPage_scheduled__';
             if (!(window as any)[FLAG]) {
@@ -496,8 +497,7 @@ async function initialize(): Promise<void> {
     const videoEnhancement = (settings as any)?.videoEnhancement || {};
     if (
         isVideoPage
-        && videoEnhancement.enableExternalEntryPanel !== false
-        && videoEnhancement.enableOnlineAvailability !== false
+        && isVideoEnhancementSubOn(settings, 'enableOnlineAvailability')
     ) {
         initOrchestrator.add('idle', async () => {
             onlineAvailabilityManager.updateConfig({
@@ -539,7 +539,7 @@ async function initialize(): Promise<void> {
             hideUnrecognizedActorsInList: (settings.listEnhancement as any)?.hideUnrecognizedActorsInList === true, // 默认false（空演员库保护）
             treatSubscribedAsFavorited: (settings.listEnhancement as any)?.treatSubscribedAsFavorited !== false,
             enableActorPenetration: (settings.listEnhancement as any)?.enableActorPenetration === true,
-            enableActorNameMarks: (settings as any)?.videoEnhancement?.enableActorNameMarks !== false,
+            enableActorNameMarks: isVideoEnhancementSubOn(settings, 'enableActorNameMarks'),
             // 高质量封面：列表路径已弃用（JavDB 默认高清）；固定 false，配置字段仅兼容存储
             enableHighQualityCover: false,
             // 🆕 列表显示控制
@@ -586,7 +586,7 @@ async function initialize(): Promise<void> {
     }
 
     // 初始化演员标记增强功能（仅影片页 high）
-    if ((settings.videoEnhancement as any)?.enableActorQuickActions !== false && isVideoPage) {
+    if (isVideoEnhancementSubOn(settings, 'enableActorQuickActions') && isVideoPage) {
         actorQuickActionsManager.updateConfig({
             enabled: true,
             showDelay: 300,

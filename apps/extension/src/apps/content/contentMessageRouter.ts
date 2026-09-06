@@ -6,6 +6,7 @@
 import { getSettings, getValue } from '../../utils/storage';
 import { STORAGE_KEYS } from '../../utils/config';
 import { STATE, log } from '../../features/contentState';
+import { isVideoEnhancementSubOn } from '../../features/videoDetail/videoEnhancementGate';
 import { processVisibleItems } from '../../features/listEnhancement/content/itemProcessor';
 import { showToast } from '../../platform/browser/toast';
 import { extractVideoIdFromPage } from '../../platform/browser';
@@ -78,7 +79,7 @@ export function installContentMessageRouter(): void {
                 try {
                     listEnhancementManager.updateConfig({
                         enableActorPenetration: (settings.listEnhancement as any)?.enableActorPenetration === true,
-                        enableActorNameMarks: (settings as any)?.videoEnhancement?.enableActorNameMarks !== false,
+                        enableActorNameMarks: isVideoEnhancementSubOn(settings, 'enableActorNameMarks'),
                         hideBlacklistedActorsInList: (settings.listEnhancement as any)?.hideBlacklistedActorsInList === true,
                         hideNonFavoritedActorsInList: (settings.listEnhancement as any)?.hideNonFavoritedActorsInList === true,
                         hideUnrecognizedActorsInList: (settings.listEnhancement as any)?.hideUnrecognizedActorsInList === true, // 默认false（空演员库保护）
