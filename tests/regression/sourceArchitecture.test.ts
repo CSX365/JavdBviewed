@@ -2261,12 +2261,13 @@ describe('source architecture cleanup', () => {
     }
   });
 
-  it('keeps actor remarks gated only by its own toggle (no master-switch double gate)', () => {
+  it('gates actor remarks via the unified resolver (F2: master default-on + own toggle)', () => {
     const bootstrap = fs.readFileSync(path.resolve(root, 'apps/extension/src/apps/content/bootstrap.ts'), 'utf8');
-    // 回归保护：演员备注曾因「videoEnhancement.enabled && enableActorRemarks」双重门控而静默无效果
-    expect(bootstrap, 'actor remarks must not require videoEnhancement master switch')
-      .not.toMatch(/videoEnhancement\??\.enabled === true && [^\n]*enableActorRemarks/);
-    expect(bootstrap, 'actor remarks must be gated by enableActorRemarks alone')
-      .toMatch(/videoEnhancement\??\.enableActorRemarks === true/);
+    // 回归保护：演员备注曾因裸「videoEnhancement.enabled && enableActorRemarks」双重门控而静默无效果；
+    // F2 统一后必须走 gate resolver（主开关默认开 + 自身开关），且不得保留子字段裸直读。
+    expect(bootstrap, 'actor remarks must be gated via the unified resolver')
+      .toMatch(/isVideoEnhancementSubOn\(\s*\w+\s*,\s*'enableActorRemarks'\s*\)/);
+    expect(bootstrap, 'actor remarks must not use the raw own-toggle direct read')
+      .not.toMatch(/videoEnhancement\??\.enableActorRemarks\s*===\s*true/);
   });
 });
