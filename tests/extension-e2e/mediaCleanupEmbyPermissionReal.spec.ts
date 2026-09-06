@@ -178,9 +178,18 @@ test.describe('media cleanup Emby no-delete-permission (real container)', () => 
     const itemId = await ensureIndexedMovie(MOVIE_NAME);
 
     // 防御性前置：确认该账号视角确实 CanDelete=false（容器状态漂移时跳过而非误报失败）
+    // 注意：该路由对非管理员不认裸 X-Emby-Token（返回 401，会被误判为"前置不成立"而静默 skip），
+    // 必须与扩展 buildEmbyAuthHeaders 一致携带完整 X-Emby-Authorization 头（含 Token=）
     const probe = await fetch(
       `${EMBY_URL}/Users/${account.userId}/Items/${itemId}`,
-      { headers: { 'X-Emby-Token': account.token, Accept: 'application/json' } },
+      {
+        headers: {
+          Accept: 'application/json',
+          'X-Emby-Token': account.token,
+          'X-Emby-Authorization':
+            `MediaBrowser Client="JavdBviewed", Device="ChromeExtension", DeviceId="Dashboard", Version="4.9.5", Token="${account.token}"`,
+        },
+      },
     );
     const probeBody: any = await probe.json().catch(() => null);
     if (probe.status !== 200 || probeBody?.CanDelete !== false) {
