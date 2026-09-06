@@ -35,6 +35,13 @@ interface VideoLinkTarget {
     end: number;
 }
 
+/** mutation 触发的脏区扫描合并窗口（ms）：短时间内的多次 DOM 追加合并为一次扫描 */
+const MUTATION_SCAN_DEBOUNCE_MS = 300;
+/** 单批脏区根数量上限：超过则回退全量扫描（避免海量小子树退化，最差行为与旧版一致） */
+const MAX_DIRTY_ROOTS_PER_BATCH = 200;
+/** 单批 mutation 新增节点数上限：超过视为批量重渲染，回退全量扫描 */
+const MAX_ADDED_NODES_FOR_DIRTY_SCAN = 400;
+
 /**
  * Emby/Jellyfin 增强管理器
  */
@@ -44,6 +51,12 @@ class EmbyEnhancementManager {
     private processedElements = new WeakSet<Element>();
     private config: EmbyConfig | null = null;
     private quickActions: HTMLElement | null = null;
+    /** 待扫描的脏区根（顶层元素，已去重） */
+    private pendingDirtyRoots = new Set<Element>();
+    /** 下次 mutation flush 是否回退全量扫描（body/html 级变更或批量重渲染） */
+    private pendingFullScan = false;
+    /** mutation 合并扫描定时器 */
+    private mutationScanTimer: ReturnType<typeof setTimeout> | null = null;
 
     private _onHashChange = () => {
         this.renderQuickActions();
@@ -113,6 +126,12 @@ class EmbyEnhancementManager {
             this.observer.disconnect();
             this.observer = null;
         }
+        if (this.mutationScanTimer) {
+            clearTimeout(this.mutationScanTimer);
+            this.mutationScanTimer = null;
+        }
+        this.pendingDirtyRoots.clear();
+        this.pendingFullScan = false;
         window.removeEventListener('hashchange', this._onHashChange);
         window.removeEventListener('popstate', this._onHashChange);
         this.stopUrlWatch();
@@ -143,26 +162,42 @@ class EmbyEnhancementManager {
 
     /**
      * 设置DOM变化监听器
+     * 性能（B1）：mutation 按时间窗合并、仅扫描脏区子树，替代旧版「任意追加即全 body TreeWalker」。
+     * 语义与旧版对齐：已处理元素（WeakSet）与 <a>/SCRIPT/STYLE 内的文本同样跳过；
+     * 批量重渲染或 body 级变更回退全量扫描。
      */
     private setupMutationObserver(): void {
         this.observer = new MutationObserver((mutations) => {
             if (!this.config?.enableAutoDetection) return;
 
-            let shouldProcess = false;
+            let addedNodeCount = 0;
+            let collected = false;
 
             mutations.forEach(mutation => {
-                if (mutation.type === 'childList') {
-                    mutation.addedNodes.forEach(node => {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            shouldProcess = true;
-                        }
-                    });
-                }
+                if (mutation.type !== 'childList') return;
+                mutation.addedNodes.forEach(node => {
+                    let root: Element | null = null;
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        root = node as Element;
+                    } else if (node.nodeType === Node.TEXT_NODE) {
+                        root = node.parentElement;
+                    }
+                    if (!root) return;
+                    addedNodeCount++;
+                    collected = true;
+                    this.collectDirtyRoot(root);
+                });
             });
 
-            if (shouldProcess) {
-                this.processExistingContent();
+            if (!collected) return;
+
+            // 批量重渲染：全部子树并集≈整个 body，回退全量扫描保持旧版语义
+            if (addedNodeCount > MAX_ADDED_NODES_FOR_DIRTY_SCAN) {
+                this.pendingFullScan = true;
+                this.pendingDirtyRoots.clear();
             }
+
+            this.scheduleMutationScan();
         });
 
         this.observer.observe(document.body, {
@@ -172,36 +207,72 @@ class EmbyEnhancementManager {
     }
 
     /**
-     * 处理现有内容
+     * 收集脏区根；body/html 级变更直接记为全量扫描
+     */
+    private collectDirtyRoot(root: Element): void {
+        if (root === document.body || root === document.documentElement) {
+            this.pendingFullScan = true;
+            return;
+        }
+        this.pendingDirtyRoots.add(root);
+    }
+
+    /**
+     * 延迟合并调度脏区扫描（短时间窗内多次 mutation 只扫一次）
+     */
+    private scheduleMutationScan(): void {
+        if (this.mutationScanTimer) return;
+        this.mutationScanTimer = setTimeout(() => {
+            this.mutationScanTimer = null;
+            this.flushPendingMutationScan();
+        }, MUTATION_SCAN_DEBOUNCE_MS);
+    }
+
+    /**
+     * 执行合并后的扫描：全量扫描或按脏区子树扫描
+     */
+    private flushPendingMutationScan(): void {
+        if (!this.isInitialized) return;
+
+        const full = this.pendingFullScan;
+        const roots = Array.from(this.pendingDirtyRoots);
+        this.pendingFullScan = false;
+        this.pendingDirtyRoots.clear();
+
+        if (!full && roots.length === 0) return;
+
+        if (!full) {
+            // 仅保留顶层脏根（祖先与后代同时脏时，扫祖先即可覆盖后代）
+            const topLevel = roots.filter(root =>
+                !roots.some(other => other !== root && other.contains(root))
+            );
+            if (topLevel.length > MAX_DIRTY_ROOTS_PER_BATCH) {
+                this.processExistingContent();
+                return;
+            }
+            topLevel.forEach(root => this.processSubtree(root));
+            return;
+        }
+
+        this.processExistingContent();
+    }
+
+    /**
+     * 处理现有内容（全量扫描：初始化 / 手动 refresh / 脏区回退）
      */
     private processExistingContent(): void {
         if (!this.config) return;
+        this.processSubtree(document.body);
+    }
 
-        // 查找所有文本节点
+    /**
+     * 扫描给定子树内的文本节点（acceptNode 与全量扫描同一口径）
+     */
+    private processSubtree(root: Element): void {
         const walker = document.createTreeWalker(
-            document.body,
+            root,
             NodeFilter.SHOW_TEXT,
-            {
-                acceptNode: (node) => {
-                    // 跳过已处理的元素
-                    if (node.parentElement && this.processedElements.has(node.parentElement)) {
-                        return NodeFilter.FILTER_REJECT;
-                    }
-
-                    // 跳过脚本和样式标签
-                    const parent = node.parentElement;
-                    if (parent && ['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
-                        return NodeFilter.FILTER_REJECT;
-                    }
-
-                    // 跳过已经是链接的元素
-                    if (parent && parent.closest('a')) {
-                        return NodeFilter.FILTER_REJECT;
-                    }
-
-                    return NodeFilter.FILTER_ACCEPT;
-                }
-            }
+            { acceptNode: (node) => this.acceptTextNodeForScan(node) }
         );
 
         const textNodes: Text[] = [];
@@ -211,6 +282,31 @@ class EmbyEnhancementManager {
         }
 
         textNodes.forEach(textNode => this.processTextNode(textNode));
+    }
+
+    /**
+     * 参与扫描的文本节点判定（全量/脏区共用）
+     */
+    private acceptTextNodeForScan(node: Node): number {
+        const textNode = node as Text;
+
+        // 跳过已处理的元素
+        if (textNode.parentElement && this.processedElements.has(textNode.parentElement)) {
+            return NodeFilter.FILTER_REJECT;
+        }
+
+        // 跳过脚本和样式标签
+        const parent = textNode.parentElement;
+        if (parent && ['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
+            return NodeFilter.FILTER_REJECT;
+        }
+
+        // 跳过已经是链接的元素
+        if (parent && parent.closest('a')) {
+            return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
     }
 
     /**
@@ -429,6 +525,8 @@ class EmbyEnhancementManager {
         }
 
         this.processedElements = new WeakSet();
+        this.pendingDirtyRoots.clear();
+        this.pendingFullScan = false;
         this.processExistingContent();
         this.renderQuickActions();
         log('Emby enhancement refreshed');

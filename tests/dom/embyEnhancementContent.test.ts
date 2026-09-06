@@ -105,3 +105,127 @@ describe('emby enhancement content recognition', () => {
     expect(links).toHaveLength(1);
   });
 });
+
+describe('emby enhancement mutation dirty-region scan (B1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setEmbySettings();
+    document.body.innerHTML = '';
+  });
+
+  afterEach(() => {
+    embyEnhancementManager.destroy();
+    vi.useRealTimers();
+    STATE.settings = null;
+    STATE.records = {};
+    STATE.embyLibraryState = null;
+    document.body.innerHTML = '';
+  });
+
+  it('links small dynamic append via dirty-region scan without duplicating existing links', async () => {
+    appendTextContainer('Existing ABC-123');
+
+    await embyEnhancementManager.initialize();
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(1);
+
+    const slot = document.createElement('div');
+    document.body.appendChild(slot);
+    const item = document.createElement('div');
+    item.textContent = 'Appended SDD-456';
+    slot.appendChild(item);
+
+    // 脏区扫描为延迟合并执行（300ms 窗口）
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(slot.querySelector('.emby-video-link')?.textContent).toBe('SDD-456');
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(2);
+  });
+
+  it('does not re-link code text appended directly under an already-processed element (parity with old full scan)', async () => {
+    const container = appendTextContainer('Existing ABC-123');
+
+    await embyEnhancementManager.initialize();
+    expect(container.querySelectorAll('.emby-video-link')).toHaveLength(1);
+
+    // 已处理元素下直接追加文本节点：旧版全量扫描同样按 processedElements 跳过
+    container.appendChild(document.createTextNode('Appended SDD-456'));
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(container.querySelectorAll('.emby-video-link')).toHaveLength(1);
+  });
+
+  it('links SPA text replacement (old text node removed, new one appended)', async () => {
+    const item = document.createElement('div');
+    item.textContent = 'No code initially';
+    document.body.appendChild(item);
+
+    await embyEnhancementManager.initialize();
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(0);
+
+    // 等价于 SPA 文案刷新：旧文本节点被移除、新文本节点追加
+    item.textContent = 'Updated HDF-789';
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(item.querySelector('.emby-video-link')?.textContent).toBe('HDF-789');
+  });
+
+  it('falls back to a full-body scan on bulk re-render and still links new codes', async () => {
+    appendTextContainer('Existing ABC-123');
+
+    await embyEnhancementManager.initialize();
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(1);
+
+    const bulk = document.createElement('div');
+    for (let i = 0; i < 450; i += 1) {
+      const el = document.createElement('div');
+      el.textContent = i === 10 ? `SDD-${456 + i}` : `Plain item ${i}`;
+      bulk.appendChild(el);
+    }
+    document.body.appendChild(bulk);
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(bulk.querySelectorAll('.emby-video-link')).toHaveLength(1);
+    expect(bulk.querySelector('.emby-video-link')?.textContent).toBe('SDD-466');
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(2);
+  });
+
+  it('does not duplicate links when a processed element is removed and re-appended', async () => {
+    const item = document.createElement('div');
+    item.textContent = 'Movable ABC-900';
+    const holder = document.createElement('section');
+    holder.appendChild(item);
+    document.body.appendChild(holder);
+
+    await embyEnhancementManager.initialize();
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(1);
+
+    const link = item.querySelector('.emby-video-link');
+    expect(link).not.toBeNull();
+
+    item.remove();
+    holder.appendChild(item);
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(link?.isConnected).toBe(true);
+    expect(document.querySelectorAll('.emby-video-link')).toHaveLength(1);
+  });
+
+  it('stops processing after destroy even if a mutation was pending', async () => {
+    appendTextContainer('Existing ABC-123');
+
+    await embyEnhancementManager.initialize();
+
+    const slot = document.createElement('div');
+    document.body.appendChild(slot);
+    slot.textContent = 'Appended SDD-456';
+
+    embyEnhancementManager.destroy();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(slot.querySelector('.emby-video-link')).toBeNull();
+  });
+});
