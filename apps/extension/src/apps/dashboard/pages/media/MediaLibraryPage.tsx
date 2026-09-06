@@ -1207,6 +1207,7 @@ export function MediaLibraryPage({ isActive = true }: MediaLibraryPageProps) {
           items={heroes}
           coverView={coverView}
           usingPreview={usingPreview}
+          isActive={isActive}
           onRequestPlayback={requestPlayback}
           onOpenDetail={setDetailItem}
         />
@@ -1836,16 +1837,26 @@ function MediaHeroCarousel({
   items,
   coverView,
   usingPreview,
+  isActive = true,
   onRequestPlayback,
   onOpenDetail,
 }: {
   items: MediaBrowseItem[];
   coverView: MediaCoverViewMode;
   usingPreview: boolean;
+  /** 媒体库 tab 是否处于激活态；隐藏时暂停自动步进，避免跨 tab 偷主线程 */
+  isActive?: boolean;
   onRequestPlayback: (item: MediaBrowseItem) => void;
   onOpenDetail: (item: MediaBrowseItem) => void;
 }) {
   const [heroStep, setHeroStep] = useState(0);
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+
+  useEffect(() => {
+    const onVisibilityChange = () => setPageVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
   const heroWindow = useMemo(
     () => buildCarouselWindow(heroStep, items.length, MEDIA_HERO_VISIBLE_RADIUS + 1),
     [heroStep, items.length],
@@ -1860,11 +1871,14 @@ function MediaHeroCarousel({
 
   useEffect(() => {
     if (items.length === 0) return undefined;
+    // tab 隐藏或浏览器后台时暂停自动步进：4.5s 周期的卡片过渡（filter/box-shadow
+    // 0.42s 重绘）会在任何 tab 上造成 300-500ms 帧停顿（S1 归因 §9.1）。
+    if (!isActive || !pageVisible) return undefined;
     const timer = window.setTimeout(() => {
       setHeroStep((step) => step + 1);
     }, 4500);
     return () => window.clearTimeout(timer);
-  }, [heroStep, items.length]);
+  }, [heroStep, items.length, isActive, pageVisible]);
 
   const goHero = (targetIndex: number) => {
     if (items.length === 0) return;

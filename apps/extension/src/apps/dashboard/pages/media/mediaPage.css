@@ -694,7 +694,9 @@
   border-radius: 16px;
   overflow: hidden;
   transform-origin: center center;
-  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.42s ease, filter 0.42s ease, box-shadow 0.42s ease;
+  /* filter/box-shadow 过渡会触发 7 张大卡逐帧 repaint（300-500ms/次，S1 归因 §9.1），
+     改为步进时瞬时切换；transform/opacity 走合成器，不占主线程 */
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.42s ease;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
   padding: 0 !important;
   margin: 0 !important;

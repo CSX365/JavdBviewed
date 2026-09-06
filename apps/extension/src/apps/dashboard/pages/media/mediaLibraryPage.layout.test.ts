@@ -298,7 +298,14 @@ describe('MediaLibraryPage 实时刷新', () => {
     expect(source).toContain('function MediaHeroCarousel');
     expect(source).toContain('data-hero-step={heroStep}');
     expect(source).toContain('window.setTimeout(() =>');
-    expect(source).toContain('}, [heroStep, items.length]);');
+    expect(source).toContain('}, [heroStep, items.length, isActive, pageVisible]);');
+  });
+
+  it('pauses hero auto-advance when the media tab is hidden or the page is in background (S1 §9.1)', () => {
+    expect(source).toContain('if (!isActive || !pageVisible) return undefined;');
+    expect(source).toContain('}, [heroStep, items.length, isActive, pageVisible]);');
+    expect(source).toContain('onVisibilityChange');
+    expect(source).toContain('isActive={isActive}');
   });
 
   it('uses the 115 cover loader for carousel items instead of only static metadata', () => {
