@@ -1756,4 +1756,62 @@ describe('GlobalTaskCenter snapshot persistence (B5 双写合并/进度合并)',
       (globalThis as any).chrome.storage.local.set = previousSet;
     }
   });
+
+  it('稳态进度流写数预算：3s 进度活动至多 floor(3000/500)+1 次快照写（旧算法 = 逐条直写 35 次）', async () => {
+    const previousSet = (globalThis as any).chrome.storage.local.set;
+    const writes: Array<Record<string, unknown>> = [];
+    (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
+      writes.push(value);
+    };
+    vi.useFakeTimers();
+
+    try {
+      const center = new GlobalTaskCenter();
+      center.updateVisibility(1, true);
+      center.registerTask(createDescriptor({
+        taskId: 'b5-steady-budget-task',
+        label: 'videoEnhancement:runTitle',
+        dedupeKey: 'b5-steady-budget-key',
+      }));
+
+      // 阶段 1：t=0..960，30ms 间隔 33 条进度（模拟详情页增强主循环的高频进度）
+      for (let i = 1; i <= 33; i += 1) {
+        if (i > 1) vi.advanceTimersByTime(30);
+        center.handleMessage(
+          { type: TASK_CENTER_MESSAGE.PROGRESS, payload: { taskId: 'b5-steady-budget-task', progressPct: i } },
+          {} as chrome.runtime.MessageSender,
+          () => undefined,
+        );
+      }
+      // 阶段 2：间隙后 t=1960、t=2960 两条低频进度（模拟换页/暂停后的尾段）
+      vi.advanceTimersByTime(1000);
+      center.handleMessage(
+        { type: TASK_CENTER_MESSAGE.PROGRESS, payload: { taskId: 'b5-steady-budget-task', progressPct: 98 } },
+        {} as chrome.runtime.MessageSender,
+        () => undefined,
+      );
+      vi.advanceTimersByTime(1000);
+      center.handleMessage(
+        { type: TASK_CENTER_MESSAGE.PROGRESS, payload: { taskId: 'b5-steady-budget-task', progressPct: 100 } },
+        {} as chrome.runtime.MessageSender,
+        () => undefined,
+      );
+      // 让所有待决防抖窗落下
+      vi.advanceTimersByTime(4000);
+
+      // 预算律：进度活动跨度 t=0..2960（≈3s）→ 至多 floor(3000/500)+1 = 7 次写；
+      // 旧算法 = 每条进度立即直写 = 35 次
+      expect(writes.length, '稳态进度写数应满足 500ms 窗预算律（≤7）').toBeLessThanOrEqual(7);
+      expect(writes.length, '至少合并落盘一次').toBeGreaterThan(0);
+      // 最终进度必须落盘
+      const last = writes[writes.length - 1];
+      const persisted = (last['taskCenter:snapshot'] as any)?.tasks?.find(
+        (task: any) => task?.descriptor?.taskId === 'b5-steady-budget-task',
+      );
+      expect(persisted?.runtime?.progressPct).toBe(100);
+    } finally {
+      vi.useRealTimers();
+      (globalThis as any).chrome.storage.local.set = previousSet;
+    }
+  });
 });
