@@ -1,6 +1,13 @@
 /**
  * 密码显示助手 - 独立内容脚本
  * 在所有网站上运行，提供密码显示功能
+ *
+ * 按需化设计（2026-09-07 性能周期 2 批四 / B2）：
+ * - 首帧仅做一次 chrome.storage 读取，用于探测开关状态（唯一的 storage 读）；
+ * - 启用态：延迟启动助手，并注册 onMessage / storage.onChanged 监听以支持热配置变更；
+ * - 关闭态：首帧后零常驻监听、零重复读取，脚本完全静默。
+ *   注意取舍：关闭态页面无法收到设置面板的热开启广播，需刷新页面生效；
+ *   新打开/新导航的页面始终按最新配置即时生效。
  */
 
 // 简单的日志函数（不依赖 state.ts）
@@ -216,68 +223,130 @@ function isCoveredByMainContentScript(hostname: string): boolean {
     );
 }
 
-// 初始化密码助手
-async function initialize() {
-    try {
-        // 全站独立脚本：JavDB 主站由 apps/content/bootstrap 的 passwordHelper:init 负责
-        if (isCoveredByMainContentScript(window.location.hostname)) {
-            log('Skip standalone on main content host', window.location.hostname);
-            return;
-        }
+type RuntimeMessageListener = (message: any, sender?: any, sendResponse?: (response?: any) => void) => void;
+type StorageChangedListener = (changes: { [key: string]: any }, areaName: string) => void;
 
-        const settings = await getSettings() as any;
-        let passwordHelper: PasswordHelper | null = null;
+/** 模块运行态：helper 实例与当前已注册的监听器引用 */
+const runtimeState = {
+    helper: null as PasswordHelper | null,
+    messageListener: null as RuntimeMessageListener | null,
+    storageListener: null as StorageChangedListener | null,
+    startedForHost: '' as string,
+};
 
-        const ensureStarted = (cfg: { showMethod?: number; waitTime?: number }) => {
-            if (!passwordHelper) {
-                passwordHelper = new PasswordHelper(cfg.showMethod || 0, cfg.waitTime || 300);
-                setTimeout(() => {
-                    passwordHelper?.init();
-                    log('Password helper initialized on', window.location.hostname);
-                }, 1000);
-            } else {
-                passwordHelper.updateConfig(cfg.showMethod || 0, cfg.waitTime || 300);
-            }
-        };
+function startHelper(config: { showMethod?: number; waitTime?: number }): void {
+    if (runtimeState.helper) return;
+    const helper = new PasswordHelper(config.showMethod || 0, config.waitTime || 300);
+    runtimeState.helper = helper;
+    // 延迟到首帧后再挂 MutationObserver，降低页面初始化成本
+    setTimeout(() => {
+        runtimeState.helper?.init();
+        log('Password helper initialized on', window.location.hostname);
+    }, 1000);
+}
 
-        const applySettings = (newSettings: any) => {
-            if (newSettings?.userExperience?.enablePasswordHelper) {
-                const newConfig = newSettings.passwordHelper || { showMethod: 0, waitTime: 300 };
-                ensureStarted(newConfig);
-                log('Password helper config updated');
-            } else if (passwordHelper) {
-                passwordHelper.destroy();
-                passwordHelper = null;
-                log('Password helper disabled');
-            }
-        };
+function stopHelper(): void {
+    if (runtimeState.helper) {
+        runtimeState.helper.destroy();
+        runtimeState.helper = null;
+        log('Password helper disabled');
+    }
+}
 
-        // 与 bootstrap 同一 settings key：关闭时不修改输入框
-        if (settings.userExperience?.enablePasswordHelper) {
-            const passwordHelperConfig = settings.passwordHelper || { showMethod: 0, waitTime: 300 };
-            ensureStarted(passwordHelperConfig);
-        } else {
-            log('Password helper is disabled');
-        }
-
-        chrome.runtime.onMessage.addListener((message) => {
+/** 启用态才持有监听器；关闭态注销全部监听（零常驻） */
+function ensureListenersRegistered(): void {
+    if (runtimeState.messageListener === null) {
+        const listener: RuntimeMessageListener = (message) => {
             if (message.type === 'settings-updated' || message.type === 'SETTINGS_UPDATED') {
                 applySettings(message.settings);
             }
-        });
-
+        };
+        chrome.runtime.onMessage.addListener(listener);
+        runtimeState.messageListener = listener;
+    }
+    if (runtimeState.storageListener === null) {
+        const listener: StorageChangedListener = (changes, area) => {
+            if (area !== 'local' || !changes['settings']) return;
+            applySettings(changes['settings'].newValue || {});
+        };
         try {
-            chrome.storage.onChanged.addListener((changes, area) => {
-                if (area !== 'local' || !changes['settings']) return;
-                applySettings(changes['settings'].newValue || {});
-            });
+            chrome.storage.onChanged.addListener(listener);
+            runtimeState.storageListener = listener;
         } catch (e) {
             log('storage.onChanged bind failed', e);
+        }
+    }
+}
+
+function unregisterListeners(): void {
+    if (runtimeState.messageListener) {
+        try {
+            chrome.runtime.onMessage.removeListener(runtimeState.messageListener);
+        } catch (e) {
+            log('onMessage removeListener failed', e);
+        }
+        runtimeState.messageListener = null;
+    }
+    if (runtimeState.storageListener) {
+        try {
+            chrome.storage.onChanged.removeListener(runtimeState.storageListener);
+        } catch (e) {
+            log('storage.onChanged removeListener failed', e);
+        }
+        runtimeState.storageListener = null;
+    }
+}
+
+function applySettings(newSettings: any): void {
+    if (newSettings?.userExperience?.enablePasswordHelper) {
+        const newConfig = newSettings.passwordHelper || { showMethod: 0, waitTime: 300 };
+        if (runtimeState.helper) {
+            runtimeState.helper.updateConfig(newConfig.showMethod || 0, newConfig.waitTime || 300);
+        } else {
+            startHelper(newConfig);
+        }
+        ensureListenersRegistered();
+        log('Password helper config updated');
+    } else {
+        stopHelper();
+        unregisterListeners();
+    }
+}
+
+// 初始化密码助手
+export async function initialize(hostname: string = window.location.hostname): Promise<void> {
+    try {
+        if (runtimeState.startedForHost === hostname) return;
+        runtimeState.startedForHost = hostname;
+
+        // 全站独立脚本：JavDB 主站由 apps/content/bootstrap 的 passwordHelper:init 负责
+        if (isCoveredByMainContentScript(hostname)) {
+            log('Skip standalone on main content host', hostname);
+            return;
+        }
+
+        // 首帧唯一一次 storage 读：探测开关状态
+        const settings = await getSettings() as any;
+        if (settings?.userExperience?.enablePasswordHelper) {
+            applySettings(settings);
+        } else {
+            // 关闭态：不注册任何监听器，脚本静默（刷新后按最新配置生效）
+            log('Password helper is disabled; no listeners registered until next navigation');
         }
     } catch (error) {
         log('Initialization failed:', error);
     }
 }
 
+/**
+ * 清理钩子（供测试 teardown 使用）：注销全部监听器、断开 DOM 观察并复位站点标记。
+ * 生产环境内容脚本生命周期内不会调用。
+ */
+export function disposeForTests(): void {
+    stopHelper();
+    unregisterListeners();
+    runtimeState.startedForHost = '';
+}
+
 // 启动
-initialize();
+void initialize();
