@@ -8,6 +8,7 @@ import { getRepoRawUrl } from '../../shared/repoIdentity';
 import type { ExtensionSettings } from '../../types';
 import { buildServerApiUrl, verifyJsonChecksum } from '../../platform/network/serverEndpointResolver';
 import { createDefaultRouteSettings } from './defaultRoutes';
+import type { RouteSettings } from './defaultRoutes';
 
 export type ServiceType = 'javdb' | 'javbus';
 
@@ -107,6 +108,8 @@ export class RouteManager {
     private cache: Map<ServiceType, string> = new Map();
     private cacheExpiry: Map<ServiceType, number> = new Map();
     private readonly CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
+    // routes 字段的串行写链：保证本进程内的线路写按序执行，配合写前重读避免抹掉其他 feature 的并发写
+    private settingsWriteChain: Promise<void> = Promise.resolve();
 
     private constructor() {}
 
@@ -471,63 +474,83 @@ export class RouteManager {
      * 保留用户自定义的线路和首选设置
      */
     private async mergeRemoteRoutes(remoteConfig: RemoteRoutesConfig): Promise<void> {
-        const settings = await this.getSettings();
-        const currentRoutes = settings.routes || DEFAULT_ROUTES;
+        await this.mutateRoutes((currentRoutes) => {
+            // 处理 JavDB 线路
+            const javdbRemote = remoteConfig.services.javdb;
+            const javdbCurrent = currentRoutes.javdb;
 
-        // 处理 JavDB 线路
-        const javdbRemote = remoteConfig.services.javdb;
-        const javdbCurrent = currentRoutes.javdb;
+            // 获取用户自定义的线路（不在远程配置中的）
+            const javdbCustomRoutes = javdbCurrent.alternatives.filter((alt: RouteAlternative) =>
+                !javdbRemote.alternatives.some(remote => remote.url === alt.url)
+            );
 
-        // 获取用户自定义的线路（不在远程配置中的）
-        const javdbCustomRoutes = javdbCurrent.alternatives.filter((alt: RouteAlternative) =>
-            !javdbRemote.alternatives.some(remote => remote.url === alt.url)
-        );
+            // 合并线路：远程线路 + 用户自定义线路
+            const javdbMergedAlternatives = [
+                ...javdbRemote.alternatives.map(remote => ({
+                    url: remote.url,
+                    enabled: true,
+                    description: remote.description,
+                    addedAt: Date.parse(remote.addedAt) || Date.now()
+                })),
+                ...javdbCustomRoutes
+            ];
 
-        // 合并线路：远程线路 + 用户自定义线路
-        const javdbMergedAlternatives = [
-            ...javdbRemote.alternatives.map(remote => ({
-                url: remote.url,
-                enabled: true,
-                description: remote.description,
-                addedAt: Date.parse(remote.addedAt) || Date.now()
-            })),
-            ...javdbCustomRoutes
-        ];
+            // 处理 JavBus 线路
+            const javbusRemote = remoteConfig.services.javbus;
+            const javbusCurrent = currentRoutes.javbus;
 
-        // 处理 JavBus 线路
-        const javbusRemote = remoteConfig.services.javbus;
-        const javbusCurrent = currentRoutes.javbus;
+            const javbusCustomRoutes = javbusCurrent.alternatives.filter((alt: RouteAlternative) =>
+                !javbusRemote.alternatives.some(remote => remote.url === alt.url)
+            );
 
-        const javbusCustomRoutes = javbusCurrent.alternatives.filter((alt: RouteAlternative) =>
-            !javbusRemote.alternatives.some(remote => remote.url === alt.url)
-        );
+            const javbusMergedAlternatives = [
+                ...javbusRemote.alternatives.map(remote => ({
+                    url: remote.url,
+                    enabled: true,
+                    description: remote.description,
+                    addedAt: Date.parse(remote.addedAt) || Date.now()
+                })),
+                ...javbusCustomRoutes
+            ];
 
-        const javbusMergedAlternatives = [
-            ...javbusRemote.alternatives.map(remote => ({
-                url: remote.url,
-                enabled: true,
-                description: remote.description,
-                addedAt: Date.parse(remote.addedAt) || Date.now()
-            })),
-            ...javbusCustomRoutes
-        ];
-
-        // 更新设置（保留用户的 preferredUrl）
-        settings.routes = {
-            javdb: {
-                primary: javdbRemote.primary,
-                preferredUrl: javdbCurrent.preferredUrl,
-                alternatives: javdbMergedAlternatives
-            },
-            javbus: {
-                primary: javbusRemote.primary,
-                preferredUrl: javbusCurrent.preferredUrl,
-                alternatives: javbusMergedAlternatives
-            }
-        };
-
-        await this.saveSettings(settings);
+            // 返回合并后的 routes（保留用户的 preferredUrl）
+            return {
+                javdb: {
+                    primary: javdbRemote.primary,
+                    preferredUrl: javdbCurrent.preferredUrl,
+                    alternatives: javdbMergedAlternatives
+                },
+                javbus: {
+                    primary: javbusRemote.primary,
+                    preferredUrl: javbusCurrent.preferredUrl,
+                    alternatives: javbusMergedAlternatives
+                }
+            };
+        });
         console.info('[RouteManager] 线路配置已合并，保留了用户自定义线路');
+    }
+
+    /**
+     * 以「串行链 + 写前重读 + 字段级落盘」的方式修改 settings.routes 字段。
+     *
+     * settings 是单一巨型键，无法部分写入；直接「整读-改-整写」会抹掉
+     * 其他 feature 在读取与写入之间完成的并发写。该方法是 routes 字段
+     * 唯一允许的写入口（当前调用方为 mergeRemoteRoutes）。
+     *
+     * 已知残余风险：串行链是进程内互斥，不跨 Service Worker context；
+     * 且写前重读与落盘之间仍存在微任务窗口，极端并发下无 CAS 兜底
+     * （该路径 24 小时至多一次写，接受此风险，不做 storage 层写合并）。
+     */
+    private mutateRoutes(mutator: (currentRoutes: RouteSettings) => RouteSettings): Promise<void> {
+        const run = this.settingsWriteChain.then(async () => {
+            const base = await this.getSettings();
+            const nextRoutes = mutator(base.routes || DEFAULT_ROUTES);
+            const fresh = await this.getSettings();
+            fresh.routes = nextRoutes;
+            await this.saveSettings(fresh);
+        });
+        this.settingsWriteChain = run.then(() => undefined, () => undefined);
+        return run;
     }
 
     /**
