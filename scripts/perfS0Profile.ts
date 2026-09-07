@@ -429,6 +429,7 @@ const SW_HOOK_SRC = `(() => {
     storageSetCount: 0,
     storageSetBytes: 0,
     setKeyCombos: {},
+    storageByKey: {},
     outMessages: 0,
     outByType: {},
     outBuckets: {},
@@ -458,6 +459,16 @@ const SW_HOOK_SRC = `(() => {
         let combo = 'unknown';
         try { combo = Object.keys(items || {}).sort().join('+') || 'empty'; } catch (err) {}
         hook.setKeyCombos[combo] = (hook.setKeyCombos[combo] || 0) + 1;
+        // per-key 字节归因（近似：逐 key 单独序列化，多 key set 的合计略小于整体长度，够用相对归因）
+        try {
+          for (const [k, v] of Object.entries(items || {})) {
+            let kb = 0;
+            try { kb = (JSON.stringify(v) || '').length; } catch (err) {}
+            if (!hook.storageByKey[k]) hook.storageByKey[k] = { count: 0, bytes: 0 };
+            hook.storageByKey[k].count += 1;
+            hook.storageByKey[k].bytes += kb;
+          }
+        } catch (err) {}
       } catch (err) {}
       return origSet(items, callback);
     };
@@ -610,6 +621,8 @@ interface SwHookState {
   storageSetCount: number;
   storageSetBytes: number;
   setKeyCombos: Record<string, number>;
+  /** per-key 字节归因（S3 轮探针）：key → {count, bytes}，近似值见 set 插桩处注释 */
+  storageByKey: Record<string, { count: number; bytes: number }>;
   /** SW→扩展页出站消息（runtime/tabs.sendMessage）插桩：dashboard 空闲期长任务与 SW 推送的相关性归因 */
   outMessages: number;
   outByType: Record<string, number>;
@@ -622,17 +635,24 @@ interface SwAcc {
   setCount: number;
   setBytes: number;
   setKeyCombos: Record<string, number>;
+  storageByKey: Record<string, { count: number; bytes: number }>;
   outMessages: number;
   outByType: Record<string, number>;
 }
 
-const newSwAcc = (): SwAcc => ({ messages: 0, byType: {}, setCount: 0, setBytes: 0, setKeyCombos: {}, outMessages: 0, outByType: {} });
+const newSwAcc = (): SwAcc => ({ messages: 0, byType: {}, setCount: 0, setBytes: 0, setKeyCombos: {}, storageByKey: {}, outMessages: 0, outByType: {} });
 
 type SwHistogramsLike = {
   byType?: Record<string, number> | Array<{ name: string; count: number }>;
   setKeyCombos?: Record<string, number> | Array<{ name: string; count: number }>;
+  storageByKey?: Record<string, { count: number; bytes: number }> | Array<{ name: string; count: number; bytes: number }>;
   outByType?: Record<string, number> | Array<{ name: string; count: number }>;
 };
+
+const toNameCountBytes = (
+  rec: Record<string, { count: number; bytes: number }> | Array<{ name: string; count: number; bytes: number }> | undefined,
+): Array<{ name: string; count: number; bytes: number }> | undefined =>
+  Array.isArray(rec) ? rec : rec ? Object.entries(rec).map(([name, v]) => ({ name, count: v.count, bytes: v.bytes })) : undefined;
 
 const toNameCountPairs = (
   rec: Record<string, number> | Array<{ name: string; count: number }> | undefined,
@@ -646,12 +666,14 @@ const reshapeSwHistograms = (report: unknown): void => {
     if (phase?.sw) {
       phase.sw.byType = toNameCountPairs(phase.sw.byType);
       phase.sw.setKeyCombos = toNameCountPairs(phase.sw.setKeyCombos);
+      phase.sw.storageByKey = toNameCountBytes(phase.sw.storageByKey);
       phase.sw.outByType = toNameCountPairs(phase.sw.outByType);
     }
   }
   if (r.totals?.sw) {
     r.totals.sw.byType = toNameCountPairs(r.totals.sw.byType);
     r.totals.sw.setKeyCombos = toNameCountPairs(r.totals.sw.setKeyCombos);
+    r.totals.sw.storageByKey = toNameCountBytes(r.totals.sw.storageByKey);
     r.totals.sw.outByType = toNameCountPairs(r.totals.sw.outByType);
   }
 };
@@ -663,6 +685,9 @@ const cloneSwHook = (hook: SwHookState): SwHookState => ({
   storageSetCount: hook.storageSetCount,
   storageSetBytes: hook.storageSetBytes,
   setKeyCombos: { ...hook.setKeyCombos },
+  storageByKey: Object.fromEntries(
+    Object.entries(hook.storageByKey).map(([k, v]) => [k, { ...v }]),
+  ),
   outMessages: hook.outMessages,
   outByType: { ...hook.outByType },
   outBuckets: { ...hook.outBuckets },
@@ -675,6 +700,11 @@ function addSwAcc(target: SwAcc, delta: SwAcc): void {
   target.setBytes += delta.setBytes;
   for (const [key, value] of Object.entries(delta.setKeyCombos)) {
     target.setKeyCombos[key] = (target.setKeyCombos[key] ?? 0) + value;
+  }
+  for (const [key, value] of Object.entries(delta.storageByKey)) {
+    const t = target.storageByKey[key] ?? (target.storageByKey[key] = { count: 0, bytes: 0 });
+    t.count += value.count;
+    t.bytes += value.bytes;
   }
   target.outMessages += delta.outMessages;
   for (const [key, value] of Object.entries(delta.outByType)) {
@@ -693,6 +723,13 @@ function swDelta(base: SwHookState, next: SwHookState): SwAcc {
     const delta = value - (base.setKeyCombos[key] ?? 0);
     if (delta > 0) setKeyCombos[key] = delta;
   }
+  const storageByKey: Record<string, { count: number; bytes: number }> = {};
+  for (const [key, value] of Object.entries(next.storageByKey)) {
+    const b = base.storageByKey[key];
+    const dc = value.count - (b?.count ?? 0);
+    const db = value.bytes - (b?.bytes ?? 0);
+    if (dc > 0 || db > 0) storageByKey[key] = { count: Math.max(0, dc), bytes: Math.max(0, db) };
+  }
   const outByType: Record<string, number> = {};
   for (const [key, value] of Object.entries(next.outByType)) {
     const delta = value - (base.outByType[key] ?? 0);
@@ -704,6 +741,7 @@ function swDelta(base: SwHookState, next: SwHookState): SwAcc {
     setCount: Math.max(0, next.storageSetCount - base.storageSetCount),
     setBytes: Math.max(0, next.storageSetBytes - base.storageSetBytes),
     setKeyCombos,
+    storageByKey,
     outMessages: Math.max(0, next.outMessages - base.outMessages),
     outByType,
   };
@@ -1687,7 +1725,13 @@ function printRunSummary(label: string, report: RunReport): void {
     + `swMsg=${totals.sw.messages} swOut=${totals.sw.outMessages} swSet=${totals.sw.setCount}次/${Math.round(totals.sw.setBytes / 1024)}KB `
     + 'sw类型=' + JSON.stringify(totals.sw.byType)
     + ' sw出站类型=' + JSON.stringify(totals.sw.outByType)
-    + ' storage写=' + JSON.stringify(totals.sw.setKeyCombos),
+    + ' storage写=' + JSON.stringify(totals.sw.setKeyCombos)
+    + ' perKeyTop3=' + JSON.stringify(
+        Object.entries(totals.sw.storageByKey)
+          .sort((a, b) => b[1].bytes - a[1].bytes)
+          .slice(0, 3)
+          .map(([k, v]) => `${k}:${Math.round(v.bytes / 1024)}KB×${v.count}`),
+      ),
   );
   if (warnIfStaleSwSignature(totals.sw.setKeyCombos)) {
     log(
