@@ -13,8 +13,8 @@ import {
 import { getChromeStorageSnapshot, resetChromeMock } from '../setup/chrome';
 
 async function flushStorageListener(): Promise<void> {
-  // scheduleEnqueue 串行 await 多 key 入队；每个 key 至少 2 个 microtask（read+write pending）
-  for (let i = 0; i < 30; i += 1) {
+  // scheduleEnqueue 串行 await 多 key 入队；每个 key 需 gate 读 + read + write pending 若干 microtask
+  for (let i = 0; i < 100; i += 1) {
     await Promise.resolve();
   }
 }
@@ -43,6 +43,8 @@ describe('Cloud 同步 storage 监听', () => {
   });
 
   it('settings 变化会自动入队为 storage_item/settings', async () => {
+    // 预置 Cloud 会话：pending 入队门控要求存在会话或已保存凭据
+    await chrome.storage.local.set({ cloud_sync_session_v1: { accessToken: 'secret' } });
     const { registerCloudSyncStorageListener } = await import(
       '../../apps/extension/src/features/cloudSync/backgroundCloudSync'
     );
@@ -121,6 +123,8 @@ describe('Cloud 同步 storage 监听', () => {
   });
 
   it('删除可同步 storage key 时会入队删除标记', async () => {
+    // 预置 Cloud 会话：pending 入队门控要求存在会话或已保存凭据
+    await chrome.storage.local.set({ cloud_sync_session_v1: { accessToken: 'secret' } });
     const { registerCloudSyncStorageListener } = await import(
       '../../apps/extension/src/features/cloudSync/backgroundCloudSync'
     );
