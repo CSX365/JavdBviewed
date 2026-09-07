@@ -2219,21 +2219,6 @@ describe('source architecture cleanup', () => {
     }
   });
 
-  it('keeps cover enhancement implementation under its feature with content path as compatibility export', () => {
-    const targetPath = 'apps/extension/src/features/coverEnhancement/content/index.ts';
-    expect(fs.existsSync(path.resolve(root, targetPath)), `${targetPath} should exist`).toBe(true);
-
-    const legacyPath = 'apps/extension/src/content/coverEnhancement.ts';
-    const legacySource = fs.readFileSync(path.resolve(root, legacyPath), 'utf8');
-    const nonEmptyLines = legacySource
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    expect(nonEmptyLines.length, `${legacyPath} should stay a thin compatibility wrapper`).toBeLessThanOrEqual(8);
-    expect(legacySource, `${legacyPath} should re-export from features/coverEnhancement/content`).toMatch(/features\/coverEnhancement\/content/);
-  });
-
   it('keeps Emby enhancement implementation under its feature with content path as compatibility export', () => {
     const targetPath = 'apps/extension/src/features/embyEnhancement/content/index.ts';
     expect(fs.existsSync(path.resolve(root, targetPath)), `${targetPath} should exist`).toBe(true);

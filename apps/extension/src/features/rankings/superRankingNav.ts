@@ -40,6 +40,7 @@ const OBSERVER_KEY = '__jdb_super_ranking_nav_observer__';
 const OUTSIDE_CLICK_KEY = '__jdb_super_ranking_nav_outside_click__';
 const THEME_OBSERVER_KEY = '__jdb_super_ranking_theme_observer__';
 const RESTORE_LISTENER_KEY = '__jdb_super_ranking_restore_listener__';
+const BEFORE_UNLOAD_KEY = '__jdb_super_ranking_nav_before_unload__';
 const TITLE_TEXT = '超级排行榜';
 const DEFAULT_RANKING_HREF = '/rankings/movies?p=daily&t=censored';
 const PAGE_ROOT_ID = 'jdb-super-ranking-page';
@@ -806,6 +807,15 @@ export function initializeSuperRankingNav(hostname = window.location.hostname): 
     rewriteNativeFc2Links();
     bindOutsideClick();
     bindRestoreListeners();
+
+    // MPA 整页重载/关闭时断开 Observer 与监听，避免卸载期回调风暴（幂等挂接）
+    if (!(window as any)[BEFORE_UNLOAD_KEY]) {
+      const onBeforeUnload = () => {
+        destroySuperRankingNav();
+      };
+      (window as any)[BEFORE_UNLOAD_KEY] = onBeforeUnload;
+      window.addEventListener('beforeunload', onBeforeUnload);
+    }
     void handleSuperRankingPage().catch((error) => {
       log('[SuperRankingNav] handle special page failed:', error);
     });
@@ -842,6 +852,12 @@ export function destroySuperRankingNav(): void {
   if (restoreListener) {
     restoreListener();
     delete (window as any)[RESTORE_LISTENER_KEY];
+  }
+
+  const beforeUnload = (window as any)[BEFORE_UNLOAD_KEY] as (() => void) | undefined;
+  if (beforeUnload) {
+    window.removeEventListener('beforeunload', beforeUnload);
+    delete (window as any)[BEFORE_UNLOAD_KEY];
   }
   activeSupportedHost = '';
 

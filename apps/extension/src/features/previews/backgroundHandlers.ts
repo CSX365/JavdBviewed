@@ -26,10 +26,8 @@ export async function handleCheckVideoUrl(message: any, sendResponse: SendRespon
       available = response.ok || response.status === 206;
       if (available) { sendResponse({ success: true, available: true }); return; }
     } catch {}
-    const knownBadDomains = [ 'smovie.caribbeancom.com', 'smovie.1pondo.tv', 'smovie.10musume.com', 'fms.pacopacomama.com' ];
-    const isKnownBad = knownBadDomains.some(domain => url.includes(domain));
-    available = !isKnownBad && false;
-    sendResponse({ success: true, available });
+    // 原 knownBadDomains 分支（!isKnownBad && false）恒为 false，且此处 available 必为 false，属死代码，2026-09-07 移除
+    sendResponse({ success: true, available: false });
   } catch (error: any) {
     console.error(`[Background] Failed to check video URL ${message.url}:`, error);
     sendResponse({ success: false, available: false });

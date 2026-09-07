@@ -127,6 +127,18 @@ describe('super ranking navigation', () => {
     expect(anchors.map(anchor => anchor.getAttribute('href'))).toEqual(SUPER_RANKING_ITEMS.map(item => item.href));
   });
 
+  it('detaches the mutation observer and unload binding when beforeunload fires', () => {
+    renderRankingNavbar();
+
+    initializeSuperRankingNav('javdb.com');
+    expect((window as any).__jdb_super_ranking_nav_observer__).toBeDefined();
+
+    window.dispatchEvent(new Event('beforeunload'));
+
+    expect((window as any).__jdb_super_ranking_nav_observer__).toBeUndefined();
+    expect((window as any).__jdb_super_ranking_nav_before_unload__).toBeUndefined();
+  });
+
   it('restores the original ranking nav when destroyed', () => {
     renderRankingNavbar();
 
