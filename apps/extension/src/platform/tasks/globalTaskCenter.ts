@@ -155,6 +155,7 @@ export class GlobalTaskCenter {
   }
 
   // P1 FIX: 定期快照到 chrome.storage，防止 Service Worker 重启丢失状态
+  // B5 (2026-09-07): snapshot 与 dedupeIndex 合并为单次 storage.set（原两次独立 set → 写次数减半）
   private persistToStorage(): Promise<void> {
     const storage = typeof chrome !== 'undefined' ? chrome.storage?.local : undefined;
     if (!storage) return Promise.resolve();
@@ -166,15 +167,12 @@ export class GlobalTaskCenter {
       completedLabels: Array.from(this.completedTaskLabels),
       savedAt: Date.now(),
     };
-    const writes: Promise<unknown>[] = [
-      Promise.resolve(storage.set({ [this.storageKey]: snapshot })).catch(() => undefined),
-    ];
-    // P2 FIX: 同时持久化 dedupe index，防止 SW 重启后 dedupe 失效导致重复任务
+    const payload: Record<string, unknown> = { [this.storageKey]: snapshot };
+    // P2 FIX: 同批持久化 dedupe index，防止 SW 重启后 dedupe 失效导致重复任务
     if (this.dedupeIndex.size > 0) {
-      const dedupeSnapshot = Object.fromEntries(this.dedupeIndex.entries());
-      writes.push(Promise.resolve(storage.set({ [this.dedupeStorageKey]: dedupeSnapshot })).catch(() => undefined));
+      payload[this.dedupeStorageKey] = Object.fromEntries(this.dedupeIndex.entries());
     }
-    return Promise.all(writes).then(() => undefined);
+    return Promise.resolve(storage.set(payload)).catch(() => undefined).then(() => undefined);
   }
 
   /** Collapse bursty task completions into one full snapshot write. */
@@ -885,7 +883,8 @@ export class GlobalTaskCenter {
     if (typeof payload.stageStartedAt === 'number') record.runtime.stageStartedAt = payload.stageStartedAt;
     if (typeof payload.stageDurationMs === 'number') record.runtime.stageDurationMs = payload.stageDurationMs;
     this.store.setTask(taskId, record);
-    this.persistToStorage();
+    // B5 (2026-09-07): 进度是高频软状态，并入 500ms 防抖窗合并写（30s 定期快照仍为兜底）
+    this.schedulePersistToStorage();
     return { ok: true };
   }
 

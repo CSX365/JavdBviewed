@@ -1653,3 +1653,107 @@ describe('GlobalTaskCenter multi pageInstance pressure (P2 R3)', () => {
     }
   });
 });
+
+describe('GlobalTaskCenter snapshot persistence (B5 双写合并/进度合并)', () => {
+  it('lease 直写把 snapshot 与 dedupeIndex 合并为单次 storage.set', () => {
+    const previousSet = (globalThis as any).chrome.storage.local.set;
+    const writes: Array<Record<string, unknown>> = [];
+    (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
+      writes.push(value);
+    };
+
+    try {
+      const center = new GlobalTaskCenter();
+      center.updateVisibility(1, true);
+      center.registerTask(createDescriptor({
+        taskId: 'b5-merge-write-task',
+        label: 'videoStatus:fullRefresh',
+        dedupeKey: 'b5-merge-write-key',
+      }));
+
+      expect(center.requestLease('b5-merge-write-task')).toEqual({ granted: true });
+
+      // 一次 grant 只允许产生一次 set，且必须同时携带两个 key
+      expect(writes.length, '双写应合并为单次 storage.set').toBe(1);
+      expect(Object.keys(writes[0])).toContain('taskCenter:snapshot');
+      expect(Object.keys(writes[0])).toContain('taskCenter:dedupeIndex');
+      expect(writes[0]['taskCenter:dedupeIndex']).toEqual({ 'b5-merge-write-key': 'b5-merge-write-task' });
+    } finally {
+      (globalThis as any).chrome.storage.local.set = previousSet;
+    }
+  });
+
+  it('高频进度更新合并为单次防抖快照写（500ms 窗）', async () => {
+    const previousSet = (globalThis as any).chrome.storage.local.set;
+    const writes: Array<Record<string, unknown>> = [];
+    (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
+      writes.push(value);
+    };
+    vi.useFakeTimers();
+
+    try {
+      const center = new GlobalTaskCenter();
+      center.updateVisibility(1, true);
+      center.registerTask(createDescriptor({
+        taskId: 'b5-progress-task',
+        label: 'videoEnhancement:runTitle',
+        dedupeKey: 'b5-progress-key',
+      }));
+
+      for (let i = 1; i <= 10; i += 1) {
+        center.handleMessage(
+          { type: TASK_CENTER_MESSAGE.PROGRESS, payload: { taskId: 'b5-progress-task', progressPct: i * 10 } },
+          {} as chrome.runtime.MessageSender,
+          () => undefined,
+        );
+      }
+      // 防抖窗内不得产生任何写（旧行为：每条进度立即直写 → 10 次）
+      expect(writes.length, '防抖窗内应为 0 写').toBe(0);
+
+      vi.advanceTimersByTime(600);
+      expect(writes.length, '防抖窗后应合并为 1 次写').toBe(1);
+      const persisted = (writes[0]['taskCenter:snapshot'] as any)?.tasks?.find(
+        (task: any) => task?.descriptor?.taskId === 'b5-progress-task',
+      );
+      expect(persisted?.runtime?.progressPct).toBe(100);
+    } finally {
+      vi.useRealTimers();
+      (globalThis as any).chrome.storage.local.set = previousSet;
+    }
+  });
+
+  it('连续进度流下每 500ms 窗至多一次写（不逐条放大）', async () => {
+    const previousSet = (globalThis as any).chrome.storage.local.set;
+    const writes: Array<Record<string, unknown>> = [];
+    (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
+      writes.push(value);
+    };
+    vi.useFakeTimers();
+
+    try {
+      const center = new GlobalTaskCenter();
+      center.updateVisibility(1, true);
+      center.registerTask(createDescriptor({
+        taskId: 'b5-progress-burst-task',
+        label: 'videoEnhancement:runTitle',
+        dedupeKey: 'b5-progress-burst-key',
+      }));
+
+      // 模拟详情页 ~100ms 一条的密集进度流，持续 2.5s
+      for (let i = 1; i <= 25; i += 1) {
+        vi.advanceTimersByTime(100);
+        center.handleMessage(
+          { type: TASK_CENTER_MESSAGE.PROGRESS, payload: { taskId: 'b5-progress-burst-task', progressPct: i * 4 } },
+          {} as chrome.runtime.MessageSender,
+          () => undefined,
+        );
+      }
+      // 500ms 窗合并：2.5s 内至多 5 次写（旧行为：25 次逐条直写）
+      expect(writes.length).toBeLessThanOrEqual(5);
+      expect(writes.length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+      (globalThis as any).chrome.storage.local.set = previousSet;
+    }
+  });
+});
