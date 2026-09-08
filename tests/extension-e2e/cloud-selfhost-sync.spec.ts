@@ -114,10 +114,15 @@ async function connectAndSync(page: Page, deviceLabel: string): Promise<void> {
   await dialog.locator('#cloud-device-label').fill(deviceLabel);
   await dialog.locator('#cloud-identifier').fill(cloudUser);
   await dialog.locator('#cloud-password').fill(cloudPassword!);
+  // 保存仅持久化连接草稿，不触发登录（19821fcdf 起）；登录与同步由摘要卡「重新连接」触发。
   await dialog.getByRole('button', { name: /保存(?:修改|连接)/ }).click();
-  await expect(page.getByText('已自动登录并完成首次同步', { exact: true }).first())
-    .toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText(/连接配置已保存/).first()).toBeVisible({ timeout: 30_000 });
+  await expect(dialog.getByRole('button', { name: '保存连接', exact: true })).toBeEnabled();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: '重新连接', exact: true }).click();
+  const progressDialog = page.getByRole('dialog').filter({ hasText: '同步完成' });
+  await expect(progressDialog).toBeVisible({ timeout: 180_000 });
   await closeCompletedSyncDialog(page);
 }
 
@@ -177,8 +182,12 @@ async function readTestVideo(page: Page, videoId: string): Promise<unknown> {
 
 async function isTestVideoQueued(page: Page, videoId: string): Promise<boolean> {
   return page.evaluate(async (id) => {
-    const { cloud_sync_pending_v1: pending } = await chrome.storage.local.get('cloud_sync_pending_v1');
-    return Array.isArray(pending) && pending.some(
+    // 全量快照写 cloud_sync_pending_v1，增量变更写 cloud_sync_pending_delta_v1，两者都要检查。
+    const { cloud_sync_pending_v1: base, cloud_sync_pending_delta_v1: delta } =
+      await chrome.storage.local.get(['cloud_sync_pending_v1', 'cloud_sync_pending_delta_v1']);
+    const baseList = Array.isArray(base) ? base : [];
+    const deltaList = delta && typeof delta === 'object' && !Array.isArray(delta) ? Object.values(delta) : [];
+    return [...baseList, ...deltaList].some(
       (entity) => entity?.type === 'video' && entity?.id === id,
     );
   }, videoId);
