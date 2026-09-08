@@ -585,7 +585,7 @@ export async function listsPut(record: ListRecord): Promise<void> {
   } catch { /* Cloud 可选 */ }
 }
 
-export async function listsBulkPut(records: ListRecord[]): Promise<void> {
+export async function listsBulkPut(records: ListRecord[], options?: BulkPutCloudOptions): Promise<void> {
   if (!records || records.length === 0) return;
   const db = await initDB();
   const tx = db.transaction('lists', 'readwrite');
@@ -598,10 +598,12 @@ export async function listsBulkPut(records: ListRecord[]): Promise<void> {
     try { await tx.done; } catch {}
     throw e;
   }
-  try {
-    const { scheduleEnqueue, enqueueListChanges } = await import('../../features/cloudSync/enqueueLocalChange');
-    scheduleEnqueue(() => enqueueListChanges(records));
-  } catch { /* Cloud 可选 */ }
+  if (options?.skipCloudEnqueue !== true) {
+    try {
+      const { scheduleEnqueue, enqueueListChanges } = await import('../../features/cloudSync/enqueueLocalChange');
+      scheduleEnqueue(() => enqueueListChanges(records));
+    } catch { /* Cloud 可选 */ }
+  }
 }
 
 export async function listsGet(id: string): Promise<ListRecord | undefined> {
@@ -749,7 +751,12 @@ export async function viewedPut(record: VideoRecord): Promise<ViewedPutResult> {
   return { success: true };
 }
 
-export async function viewedBulkPut(records: VideoRecord[]): Promise<void> {
+export interface BulkPutCloudOptions {
+  /** 远端同步回写（applyRemote）路径专用：跳过 cloud pending 入队，避免拉取回声重推 */
+  skipCloudEnqueue?: boolean;
+}
+
+export async function viewedBulkPut(records: VideoRecord[], options?: BulkPutCloudOptions): Promise<void> {
   if (!records || records.length === 0) return;
   const db = await initDB();
   const tx = db.transaction(['viewedRecords', 'viewedByTag', 'viewedByList'], 'readwrite');
@@ -770,7 +777,7 @@ export async function viewedBulkPut(records: VideoRecord[]): Promise<void> {
     try { await tx.done; } catch {}
     throw e;
   }
-  if (written.length) {
+  if (written.length && options?.skipCloudEnqueue !== true) {
     try {
       const { scheduleEnqueue, enqueueVideoChanges } = await import('../../features/cloudSync/enqueueLocalChange');
       scheduleEnqueue(() => enqueueVideoChanges(written));
@@ -1747,7 +1754,7 @@ export async function actorsPut(record: ActorRecord): Promise<void> {
   } catch { /* Cloud 可选 */ }
 }
 
-export async function actorsBulkPut(records: ActorRecord[]): Promise<void> {
+export async function actorsBulkPut(records: ActorRecord[], options?: BulkPutCloudOptions): Promise<void> {
   if (!records || records.length === 0) return;
   const db = await initDB();
   const tx = db.transaction('actors', 'readwrite');
@@ -1765,7 +1772,7 @@ export async function actorsBulkPut(records: ActorRecord[]): Promise<void> {
     try { await tx.done; } catch {}
     throw e;
   }
-  if (written.length) {
+  if (written.length && options?.skipCloudEnqueue !== true) {
     try {
       const { scheduleEnqueue, enqueueActorChanges } = await import('../../features/cloudSync/enqueueLocalChange');
       scheduleEnqueue(() => enqueueActorChanges(written));
@@ -1921,7 +1928,7 @@ export async function newWorksPut(record: NewWorkRecord): Promise<void> {
   } catch { /* Cloud 可选 */ }
 }
 
-export async function newWorksBulkPut(records: NewWorkRecord[]): Promise<void> {
+export async function newWorksBulkPut(records: NewWorkRecord[], options?: BulkPutCloudOptions): Promise<void> {
   if (!records || records.length === 0) return;
   console.log(`[IDB] newWorksBulkPut: 准备写入 ${records.length} 个作品到 IndexedDB`);
   const db = await initDB();
@@ -1943,10 +1950,12 @@ export async function newWorksBulkPut(records: NewWorkRecord[]): Promise<void> {
   }
   // 写入后刷新当日快照，确保趋势数据不因后续已读/清理而丢失
   await newWorksDailyStatRefreshToday();
-  try {
-    const { scheduleEnqueue, enqueueNewWorkChanges } = await import('../../features/cloudSync/enqueueLocalChange');
-    scheduleEnqueue(() => enqueueNewWorkChanges(records));
-  } catch { /* Cloud 可选 */ }
+  if (options?.skipCloudEnqueue !== true) {
+    try {
+      const { scheduleEnqueue, enqueueNewWorkChanges } = await import('../../features/cloudSync/enqueueLocalChange');
+      scheduleEnqueue(() => enqueueNewWorkChanges(records));
+    } catch { /* Cloud 可选 */ }
+  }
 }
 
 export async function newWorksDelete(id: string): Promise<void> {

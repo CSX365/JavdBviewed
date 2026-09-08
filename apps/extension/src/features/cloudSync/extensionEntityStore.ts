@@ -18,8 +18,10 @@ import {
   actorsGet,
   initDB,
   listsBulkPut,
+  listsDelete,
   listsGet,
   newWorksBulkPut,
+  newWorksDelete,
   newWorksGet,
   viewedBulkPut,
   viewedGet,
@@ -339,6 +341,19 @@ export async function collectLocalSyncEntities(): Promise<SyncEntity[]> {
   return out;
 }
 
+/** 本地清单/新作品为硬删除语义：远端墓碑批量删除 */
+async function listsDeleteMany(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await listsDelete(id);
+  }
+}
+
+async function newWorksDeleteMany(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await newWorksDelete(id);
+  }
+}
+
 async function applyOne(entity: SyncEntity): Promise<void> {
   const payload = entity.payload;
   switch (entity.type) {
@@ -348,23 +363,23 @@ async function applyOne(entity: SyncEntity): Promise<void> {
         // 软删除：保留记录并补上远端墓碑时间
         (rec as any).deletedAt = entity.deletedAt;
       }
-      await viewedBulkPut([rec]);
+      await viewedBulkPut([rec], { skipCloudEnqueue: true });
       return;
     }
     case 'actor': {
       const rec = { ...(asRecord(payload) as unknown as ActorRecord), id: entity.id };
       if (entity.deletedAt) (rec as any).deletedAt = entity.deletedAt;
-      await actorsBulkPut([rec]);
+      await actorsBulkPut([rec], { skipCloudEnqueue: true });
       return;
     }
     case 'list': {
       const rec = { ...(asRecord(payload) as unknown as ListRecord), id: entity.id };
-      await listsBulkPut([rec]);
+      await listsBulkPut([rec], { skipCloudEnqueue: true });
       return;
     }
     case 'new_work': {
       const rec = { ...(asRecord(payload) as unknown as NewWorkRecord), id: entity.id };
-      await newWorksBulkPut([rec]);
+      await newWorksBulkPut([rec], { skipCloudEnqueue: true });
       return;
     }
     case 'magnet': {
@@ -500,17 +515,33 @@ export function createExtensionEntityStore(): LocalEntityStore {
       const actors: ActorRecord[] = [];
       const lists: ListRecord[] = [];
       const works: NewWorkRecord[] = [];
+      const listDeletes: string[] = [];
+      const workDeletes: string[] = [];
       const others: SyncEntity[] = [];
 
       for (const e of entities) {
         if (e.type === 'video') {
-          videos.push({ ...(asRecord(e.payload) as unknown as VideoRecord), id: e.id });
+          const rec: VideoRecord = { ...(asRecord(e.payload) as unknown as VideoRecord), id: e.id };
+          if (e.deletedAt) rec.deletedAt = e.deletedAt; // 远端墓碑必须在批量路径同样生效
+          videos.push(rec);
         } else if (e.type === 'actor') {
-          actors.push({ ...(asRecord(e.payload) as unknown as ActorRecord), id: e.id });
+          const rec: ActorRecord = { ...(asRecord(e.payload) as unknown as ActorRecord), id: e.id };
+          if (e.deletedAt) rec.deletedAt = e.deletedAt;
+          actors.push(rec);
         } else if (e.type === 'list') {
-          lists.push({ ...(asRecord(e.payload) as unknown as ListRecord), id: e.id });
+          if (e.deletedAt) {
+            // 本地清单是硬删除语义：远端墓碑直接删除
+            listDeletes.push(e.id);
+          } else {
+            lists.push({ ...(asRecord(e.payload) as unknown as ListRecord), id: e.id });
+          }
         } else if (e.type === 'new_work') {
-          works.push({ ...(asRecord(e.payload) as unknown as NewWorkRecord), id: e.id });
+          if (e.deletedAt) {
+            // 本地新作品是硬删除语义：远端墓碑直接删除
+            workDeletes.push(e.id);
+          } else {
+            works.push({ ...(asRecord(e.payload) as unknown as NewWorkRecord), id: e.id });
+          }
         } else if (e.type === 'preference' && hasSettingsStorageItem) {
           continue;
         } else {
@@ -518,10 +549,13 @@ export function createExtensionEntityStore(): LocalEntityStore {
         }
       }
 
-      if (videos.length) await viewedBulkPut(videos);
-      if (actors.length) await actorsBulkPut(actors);
-      if (lists.length) await listsBulkPut(lists);
-      if (works.length) await newWorksBulkPut(works);
+      // 远端回写不入 pending：拉取到的实体若重新入队，下次同步会原样推回（回声重推）
+      if (videos.length) await viewedBulkPut(videos, { skipCloudEnqueue: true });
+      if (actors.length) await actorsBulkPut(actors, { skipCloudEnqueue: true });
+      if (lists.length) await listsBulkPut(lists, { skipCloudEnqueue: true });
+      if (works.length) await newWorksBulkPut(works, { skipCloudEnqueue: true });
+      if (listDeletes.length) await listsDeleteMany(listDeletes);
+      if (workDeletes.length) await newWorksDeleteMany(workDeletes);
       for (const e of others) {
         await applyOne(e);
       }

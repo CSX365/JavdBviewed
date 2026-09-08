@@ -203,4 +203,51 @@ describe('chromePendingStore', () => {
       expect(storageSet).not.toHaveBeenCalled();
     });
   });
+
+  describe('cross-context storage authority', () => {
+    it('clearCloudPending keeps delta entries another context wrote to storage after this context cached state', async () => {
+      const { clearCloudPending, listCloudPending, upsertCloudPending } = await import('./chromePendingStore');
+
+      // 本上下文（模拟页面）先建立视图：入队 videoA
+      await upsertCloudPending([{ type: 'video', id: 'ABP-A' }] as any);
+
+      // 另一上下文（模拟 SW）直接把 videoB 写入 storage
+      const prevDelta = (storedValues[PENDING_DELTA_KEY] ?? {}) as Record<string, unknown>;
+      storedValues[PENDING_DELTA_KEY] = { ...prevDelta, 'video\u0000ABP-B': { type: 'video', id: 'ABP-B' } };
+
+      // 本上下文只清理已接受的 videoA
+      await clearCloudPending([{ type: 'video', id: 'ABP-A' }]);
+
+      expect(await listCloudPending()).toEqual([{ type: 'video', id: 'ABP-B' }]);
+    });
+
+    it('upsertCloudPending keeps concurrent entries another context wrote to storage', async () => {
+      const { listCloudPending, upsertCloudPending } = await import('./chromePendingStore');
+
+      await upsertCloudPending([{ type: 'video', id: 'ABP-A' }] as any);
+      const prevDelta = (storedValues[PENDING_DELTA_KEY] ?? {}) as Record<string, unknown>;
+      storedValues[PENDING_DELTA_KEY] = { ...prevDelta, 'video\u0000ABP-B': { type: 'video', id: 'ABP-B' } };
+
+      await upsertCloudPending([{ type: 'video', id: 'ABP-C' }] as any);
+
+      expect(await listCloudPending()).toEqual([
+        { type: 'video', id: 'ABP-A' },
+        { type: 'video', id: 'ABP-B' },
+        { type: 'video', id: 'ABP-C' },
+      ]);
+    });
+
+    it('ensureInitialPending does not clobber entries another context enqueued after this context read empty', async () => {
+      const { ensureInitialPending, listCloudPending } = await import('./chromePendingStore');
+
+      // 本上下文先读一次空队列（旧实现在这里缓存了空快照）
+      await listCloudPending();
+      storedValues[PENDING_DELTA_KEY] = { 'video\u0000ABP-X': { type: 'video', id: 'ABP-X' } };
+
+      const enqueued = await ensureInitialPending([{ type: 'video', id: 'ABP-LOCAL' }] as any);
+
+      expect(enqueued).toBe(0);
+      expect(await listCloudPending()).toEqual([{ type: 'video', id: 'ABP-X' }]);
+    });
+  });
 });

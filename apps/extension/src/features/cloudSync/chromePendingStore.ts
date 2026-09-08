@@ -11,8 +11,6 @@ export const CLOUD_PENDING_STORAGE_KEY = 'cloud_sync_pending_v1';
 export const CLOUD_PENDING_DELTA_STORAGE_KEY = 'cloud_sync_pending_delta_v1';
 
 let pendingMutationQueue: Promise<void> = Promise.resolve();
-let pendingBaseSnapshot: SyncEntity[] | null = null;
-let pendingDeltaSnapshot: Record<string, SyncEntity> | null = null;
 
 const UNSYNCABLE_LOG_TYPES = new Set(['log', 'magnet_push_log']);
 
@@ -94,18 +92,13 @@ async function canQueuePending(): Promise<boolean> {
   });
 }
 
-async function loadPendingSnapshots(): Promise<void> {
-  if (pendingBaseSnapshot === null || pendingDeltaSnapshot === null) {
-    const pending = await readPendingStorage();
-    pendingBaseSnapshot = pending.base;
-    pendingDeltaSnapshot = pending.delta;
-  }
-}
-
-function pendingEntities(): SyncEntity[] {
-  const map = new Map((pendingBaseSnapshot ?? []).map((entity) => [entityKey(entity.type, entity.id), entity]));
-  for (const [key, entity] of Object.entries(pendingDeltaSnapshot ?? {})) {
-    map.set(key, entity);
+/**
+ * 合并 base 全量快照与 delta 增量（同 key 以 delta 为准），并过滤不可同步类型。
+ */
+function mergePending(base: SyncEntity[], delta: Record<string, SyncEntity>): SyncEntity[] {
+  const map = new Map(base.map((entity) => [entityKey(entity.type, entity.id), entity]));
+  for (const entity of Object.values(delta)) {
+    map.set(entityKey(entity.type, entity.id), entity);
   }
   return [...map.values()].filter((entity) => !UNSYNCABLE_LOG_TYPES.has(entity.type));
 }
@@ -119,10 +112,15 @@ function enqueuePendingMutation<T>(mutation: () => Promise<T>): Promise<T> {
   return result;
 }
 
+/**
+ * storage 为跨上下文（SW / 页面 / dashboard）唯一权威来源：
+ * 每次读/写都在操作开始时重新读取 storage，不使用进程内快照缓存。
+ * pending 队列规模小，重读开销可忽略；同进程内由 mutation 队列串行化。
+ */
 export async function listCloudPending(): Promise<SyncEntity[]> {
   await pendingMutationQueue;
-  await loadPendingSnapshots();
-  return pendingEntities();
+  const pending = await readPendingStorage();
+  return mergePending(pending.base, pending.delta);
 }
 
 /** 按 type+id 覆盖写入 pending（后者覆盖前者） */
@@ -131,34 +129,44 @@ export async function upsertCloudPending(entities: SyncEntity[]): Promise<void> 
   if (!syncableEntities.length) return;
   if (!(await canQueuePending())) return;
   await enqueuePendingMutation(async () => {
-    await loadPendingSnapshots();
+    const pending = await readPendingStorage();
     const effective = new Map(
-      pendingEntities().map((entity) => [entityKey(entity.type, entity.id), entity]),
+      mergePending(pending.base, pending.delta).map((entity) => [entityKey(entity.type, entity.id), entity]),
     );
     const changed = syncableEntities.filter((entity) => {
       const current = effective.get(entityKey(entity.type, entity.id));
       return !current || stableStringify(current) !== stableStringify(entity);
     });
     if (!changed.length) return;
+    const nextDelta: Record<string, SyncEntity> = { ...pending.delta };
     for (const entity of changed) {
-      pendingDeltaSnapshot![entityKey(entity.type, entity.id)] = entity;
+      nextDelta[entityKey(entity.type, entity.id)] = entity;
     }
-    await writePending({ [CLOUD_PENDING_DELTA_STORAGE_KEY]: pendingDeltaSnapshot });
+    await writePending({ [CLOUD_PENDING_DELTA_STORAGE_KEY]: nextDelta });
   });
 }
 
+/**
+ * 仅移除服务端已接受（accepted/merged）的 key；
+ * 未出现在 keys 中的 delta 条目保留，等待下次同步重推。
+ */
 export async function clearCloudPending(
   keys: Array<{ type: string; id: string }>,
 ): Promise<void> {
   if (!keys.length) return;
   await enqueuePendingMutation(async () => {
-    await loadPendingSnapshots();
+    const pending = await readPendingStorage();
     const drop = new Set(keys.map((k) => entityKey(k.type, k.id)));
-    pendingBaseSnapshot = pendingEntities().filter((entity) => !drop.has(entityKey(entity.type, entity.id)));
-    pendingDeltaSnapshot = {};
+    const nextBase = pending.base.filter((entity) => !drop.has(entityKey(entity.type, entity.id)));
+    const nextDelta: Record<string, SyncEntity> = {};
+    for (const [key, entity] of Object.entries(pending.delta)) {
+      if (!drop.has(key) && !drop.has(entityKey(entity.type, entity.id))) {
+        nextDelta[key] = entity;
+      }
+    }
     await writePending({
-      [CLOUD_PENDING_STORAGE_KEY]: pendingBaseSnapshot,
-      [CLOUD_PENDING_DELTA_STORAGE_KEY]: pendingDeltaSnapshot,
+      [CLOUD_PENDING_STORAGE_KEY]: nextBase,
+      [CLOUD_PENDING_DELTA_STORAGE_KEY]: nextDelta,
     });
   });
 }
@@ -168,14 +176,12 @@ export async function clearCloudPending(
  */
 export async function ensureInitialPending(snapshot: SyncEntity[]): Promise<number> {
   return enqueuePendingMutation(async () => {
-    await loadPendingSnapshots();
-    if (pendingEntities().length > 0) return 0;
+    const pending = await readPendingStorage();
+    if (mergePending(pending.base, pending.delta).length > 0) return 0;
     if (!snapshot.length) return 0;
-    pendingBaseSnapshot = [...snapshot];
-    pendingDeltaSnapshot = {};
     await writePending({
-      [CLOUD_PENDING_STORAGE_KEY]: pendingBaseSnapshot,
-      [CLOUD_PENDING_DELTA_STORAGE_KEY]: pendingDeltaSnapshot,
+      [CLOUD_PENDING_STORAGE_KEY]: [...snapshot],
+      [CLOUD_PENDING_DELTA_STORAGE_KEY]: {},
     });
     return snapshot.length;
   });
