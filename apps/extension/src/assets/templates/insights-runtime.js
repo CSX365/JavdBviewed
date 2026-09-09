@@ -1,4 +1,6 @@
 (function () {
+  var ECHARTS_SRC = 'assets/templates/echarts.min.js';
+  var ECHARTS_LOAD_TIMEOUT_MS = 8000;
   function parseStats() {
     try {
       var tpl = document.getElementById('insights-data');
@@ -11,16 +13,24 @@
   function safeEcharts() {
     try { return window.echarts; } catch { return undefined; }
   }
-  function waitForEcharts(ms) {
-    var timeout = typeof ms === 'number' ? ms : 4000;
-    var start = Date.now();
-    return new Promise(function(resolve){
-      (function loop(){
-        var e = safeEcharts();
-        if (e) return resolve(e);
-        if (Date.now() - start >= timeout) return resolve(null);
-        setTimeout(loop, 50);
-      })();
+  function loadEchartsScript(src, timeoutMs) {
+    // S1-2：ECharts（~1MB）改为运行时异步加载，首屏先渲染 KPI/排行等非图表内容
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function (value) { if (!done) { done = true; resolve(value); } };
+      var existing = safeEcharts();
+      if (existing) { finish(existing); return; }
+      try {
+        var sc = document.createElement('script');
+        sc.src = src || ECHARTS_SRC;
+        sc.onload = function () { finish(safeEcharts() || null); };
+        sc.onerror = function () { finish(safeEcharts() || null); };
+        (document.head || document.documentElement).appendChild(sc);
+      } catch (e) {
+        finish(safeEcharts() || null);
+        return;
+      }
+      setTimeout(function () { finish(safeEcharts() || null); }, typeof timeoutMs === 'number' ? timeoutMs : ECHARTS_LOAD_TIMEOUT_MS);
     });
   }
   function onReady(fn){
@@ -84,19 +94,13 @@
       });
     } catch{}
   }
-  function renderCharts(stats) {
-    var echarts = safeEcharts();
-    if (!stats) { renderFallback(); return; }
-    // KPI & 排行优先渲染（不依赖 ECharts）
-    renderKpis(stats);
-    renderRanking(stats);
-    // 图表部分缺少 ECharts 时仅回退图表占位
-    if (!echarts) { renderFallback(); return; }
+  function renderChartEls(stats, echarts) {
     try {
       // Pie: tagsTop
       var pieEl = document.getElementById('tags-pie');
       var topArr = (stats && (stats.tagsTop || stats.topTags)) || [];
       if (pieEl && topArr.length) {
+        pieEl.innerHTML = '';
         var pie = echarts.init(pieEl);
         pie.setOption({
           title: { text: '标签占比', left: 'center' },
@@ -110,6 +114,7 @@
       // Bar: topN
       var barEl = document.getElementById('tags-top-bar');
       if (barEl && topArr.length) {
+        barEl.innerHTML = '';
         var bar = echarts.init(barEl);
         var cats = topArr.map(function(t){ return t.name; });
         var vals = topArr.map(function(t){ return t.count; });
@@ -124,6 +129,7 @@
       // Line: trend
       var lineEl = document.getElementById('trend-line');
       if (lineEl && (stats.trend||[]).length) {
+        lineEl.innerHTML = '';
         var line = echarts.init(lineEl);
         var x = (stats.trend||[]).map(function(p){ return p.date; });
         var y = (stats.trend||[]).map(function(p){ return p.total; });
@@ -139,13 +145,29 @@
       renderFallback();
     }
   }
+  function renderCharts(stats) {
+    if (!stats) { renderFallback(); return; }
+    // KPI & 排行立即渲染（不依赖 ECharts），图表区待 ECharts 异步就绪后补齐
+    renderKpis(stats);
+    renderRanking(stats);
+    var echarts = safeEcharts();
+    if (echarts) {
+      renderChartEls(stats, echarts);
+      return;
+    }
+    loadEchartsScript().then(function (ready) {
+      if (ready) {
+        renderChartEls(stats, ready);
+      } else {
+        renderFallback();
+      }
+    });
+  }
   try {
     onReady(function(){
-      waitForEcharts(5000).then(function(){
-        var s = parseStats();
-        if (!s) s = { tagsTop: [], trend: [] };
-        renderCharts(s);
-      });
+      var s = parseStats();
+      if (!s) s = { tagsTop: [], trend: [] };
+      renderCharts(s);
     });
   } catch {}
 })();

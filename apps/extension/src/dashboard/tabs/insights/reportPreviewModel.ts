@@ -102,14 +102,11 @@ export function prepareInsightsPreviewHtml(
     } catch {}
 
     try {
+      // S1-2：ECharts 改由 runtime 异步加载，预览注入只兜底 runtime 脚本
       const needsDataRuntime = /id=["']insights-data["']/i.test(result);
-      const hasEcharts = /echarts(\.min)?\.js/i.test(result);
       const hasRuntime = /insights-runtime\.js/i.test(result);
-      if (needsDataRuntime && (!hasEcharts || !hasRuntime)) {
-        const scripts = [
-          !hasEcharts ? '<script src="assets/templates/echarts.min.js"></script>' : '',
-          !hasRuntime ? '<script src="assets/templates/insights-runtime.js"></script>' : '',
-        ].filter(Boolean).join('\n  ');
+      if (needsDataRuntime && !hasRuntime) {
+        const scripts = '<script src="assets/templates/insights-runtime.js"></script>';
 
         if (/<\/body>/i.test(result)) {
           result = result.replace(/<\/body>/i, (match) => `  ${scripts}\n${match}`);

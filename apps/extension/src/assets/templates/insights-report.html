@@ -314,7 +314,7 @@
       <small id="footer-text">生成时间：{{generatedAt}} · 版本：{{version}}</small>
     </footer>
   </main>
-  <script src="assets/templates/echarts.min.js"></script>
+  <!-- S1-2：ECharts（~1MB）改由 insights-runtime 运行时异步加载，首屏不再同步阻塞 -->
   <script src="assets/templates/insights-runtime.js"></script>
 </body>
 </html>

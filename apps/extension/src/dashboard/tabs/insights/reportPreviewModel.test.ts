@@ -44,7 +44,7 @@ describe('insights report preview model', () => {
     expect(result).not.toContain('/old/');
   });
 
-  it('adds runtime scripts when report data exists and assets are missing', () => {
+  it('adds runtime script (echarts loads async) when report data exists and assets are missing', () => {
     const html = `
       <html>
         <head></head>
@@ -57,7 +57,8 @@ describe('insights report preview model', () => {
       themeName: 'light',
     });
 
-    expect(result).toContain('<script src="assets/templates/echarts.min.js"></script>');
+    // S1-2：预览不再同步注入 echarts（runtime 会异步加载），仅兜底 runtime 脚本
+    expect(result).not.toContain('echarts.min.js');
     expect(result).toContain('<script src="assets/templates/insights-runtime.js"></script>');
   });
 

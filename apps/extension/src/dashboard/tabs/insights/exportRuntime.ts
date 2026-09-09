@@ -67,7 +67,14 @@ export function createInsightsExportRuntime(options: InsightsExportRuntimeDeps =
         if (echartsRes.ok) {
           const js = await echartsRes.text();
           const reE = /<script[^>]+src=["']assets\/(?:templates\/)?echarts\.min\.js["'][^>]*><\/script>/i;
-          resHtml = reE.test(resHtml) ? resHtml.replace(reE, `<script>${js}\n<\/script>`) : resHtml;
+          if (reE.test(resHtml)) {
+            resHtml = resHtml.replace(reE, `<script>${js}\n<\/script>`);
+          } else if (/<body[^>]*>/i.test(resHtml)) {
+            // S1-2：新模板不再携带 echarts 标签（runtime 异步加载），导出必须内联到 body 开头，
+            // 保证独立 HTML 文件中图表可渲染（且早于 body 末尾的 runtime 脚本执行）
+            const inline = `<script>/* echarts inlined for export */\n${js}\n<\/script>`;
+            resHtml = resHtml.replace(/<body([^>]*)>/i, (m) => `${m}\n  ${inline}`);
+          }
         }
       } catch {}
       try {
