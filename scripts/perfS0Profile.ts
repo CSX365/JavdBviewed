@@ -27,7 +27,7 @@
  */
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   type BrowserContext,
@@ -267,6 +267,10 @@ interface Args {
   disableVideo?: boolean;
   /** B6 业务点开关矩阵：要关闭的功能点名（仅 enhanced 臂有效） */
   featuresOff?: string[];
+  /** 剧本 A 全程 CDP 跟踪（V8 CPU 采样 + 时间轴），落 zip 供 parseDashboardTrace 归因 */
+  cdpTrace: boolean;
+  /** 逐 tick 进程分类 CPU/RSS 时间轴 JSONL（浏览器级复合负载分析） */
+  procTimeline: boolean;
 }
 
 interface Job {
@@ -535,6 +539,58 @@ function summarizeLoafTop(entries: LoafEntry[] | null | undefined, topN = 12): L
     .sort((a, b) => b.totalMs - a.totalMs)
     .slice(0, topN)
     .map((entry) => ({ ...entry, totalMs: Math.round(entry.totalMs) }));
+}
+
+/** CDP Tracing 采集器（V8 CPU 采样 + devtools timeline + latency/laf）。
+ * 本 Chromium build 的 CDP 语义（已实测）：
+ *   - Tracing.start(categories, options) 启动 browser 级 tracing，Tracing 是 browser 全局的，
+ *     发起 session 所在的 target 会收到全部进程的事件（浏览器进程 + 所有 renderer）；
+ *   - 事件名是 Tracing.dataCollected（payload.value = TraceEvent[]），不是旧版的 dataReceived；
+ *   - 数据在 Tracing.end 之后才成批送达，以 Tracing.tracingComplete 收尾（end 返回值不含数据）；
+ *   - 因此 stop() 必须先 end、再等 complete，锚点页必须存活到 stop（页面关=session 断）。 */
+async function startCdpTracing(context: BrowserContext): Promise<{ stop: () => Promise<TraceEvent[]> }> {
+  const anchorPage = await context.newPage();
+  const cdp = await context.newCDPSession(anchorPage);
+  const rawEvents: TraceEvent[] = [];
+  let completeResolve: () => void = () => {};
+  const complete = new Promise<void>((resolve) => { completeResolve = resolve; });
+  cdp.on('event', ({ method, params }) => {
+    if (method === 'Tracing.dataCollected') {
+      const value = (params as { value?: unknown } | undefined)?.value;
+      if (Array.isArray(value)) rawEvents.push(...(value as TraceEvent[]));
+    } else if (method === 'Tracing.tracingComplete') {
+      completeResolve();
+    }
+  });
+  await cdp.send('Tracing.start', {
+    categories: 'disabled-by-default-v8.cpu_profiler,disabled-by-default-devtools.timeline,latency',
+    options: 'sampling-frequency=100',
+  });
+  return {
+    async stop(): Promise<TraceEvent[]> {
+      try {
+        await cdp.send('Tracing.end');
+      } catch { /* 收尾失败保留已收事件 */ }
+      await Promise.race([complete, sleep(15_000)]);
+      // complete 之后留 300ms 缓冲，确保最后一批 dataCollected 入队
+      await sleep(300);
+      await cdp.detach().catch(() => {});
+      await anchorPage.close().catch(() => {});
+      return rawEvents;
+    },
+  };
+}
+
+interface TraceEvent {
+  name: string;
+  cat?: string;
+  ph?: string;
+  ts?: number;
+  dur?: number;
+  pid?: number;
+  tid?: number;
+  id?: string;
+  args?: { data?: Record<string, unknown> };
 }
 
 async function captureLoafTop(page: Page): Promise<LoafTopEntry[]> {
@@ -964,6 +1020,7 @@ class RunSampler {
   constructor(
     private readonly context: BrowserContext,
     private readonly proc: ChromeProcessTreeSampler,
+    private readonly procTimelinePath?: string,
   ) {
     this.phaseAcc = newPhaseAcc('cold');
     this.loopDone = this.loop();
@@ -1031,6 +1088,23 @@ class RunSampler {
       const total = summarizeWslChromeProcesses(processes);
       treeRssBytes = total.rssKb * 1024;
       treeCpuPercent = total.cpuPercent;
+      if (this.procTimelinePath) {
+        const catLine: Record<string, { cpu: number; rssKb: number; n: number }> = {};
+        for (const [category, summary] of Object.entries(byCategory) as Array<[WslChromeProcessCategory, WslChromeProcessSummary]>) {
+          catLine[category] = {
+            cpu: Math.round(summary.cpuPercent * 100) / 100,
+            rssKb: summary.rssKb,
+            n: summary.processCount,
+          };
+        }
+        appendFileSync(this.procTimelinePath, `${JSON.stringify({
+          at: Date.now(),
+          phase: acc.phase,
+          cpuPercent: Math.round(treeCpuPercent * 100) / 100,
+          rssKb: Math.round(treeRssBytes / 1024),
+          cat: catLine,
+        })}\n`, 'utf8');
+      }
     }
 
     let tickHeapPeakBytes: number | null = null;
@@ -1822,19 +1896,47 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
     if (browserPid === 0) {
       log(`[${label}] 警告：未能通过 user-data-dir 定位浏览器主进程 PID，进程树指标将为空`);
     }
-    sampler = new RunSampler(context, new ChromeProcessTreeSampler(browserPid));
+    const procTimelinePath = args.procTimeline ? path.join(args.outDir, `${label}-proc-timeline.jsonl`) : undefined;
+    if (procTimelinePath) {
+      mkdirSync(args.outDir, { recursive: true });
+      writeFileSync(procTimelinePath, '', 'utf8');
+      log(`[${label}] 进程时间轴：${path.relative(CWD, procTimelinePath)}`);
+    }
+    sampler = new RunSampler(context, new ChromeProcessTreeSampler(browserPid), procTimelinePath);
     let finished: ReturnType<RunSampler['finish']> | null = null;
     let tInteractiveMs = 0;
     let attribution: AAttribution | null = null;
     let swOut: SwOutSnapshot | null = null;
     let loafTop: Record<string, LoafTopEntry[]> | null = null;
+    let traceInfo: { file: string; startEpochMs: number } | null = null;
     try {
+      let cdpTrace: { stop: () => Promise<TraceEvent[]> } | null = null;
+      if (job.scenario === 'A' && args.cdpTrace) {
+        mkdirSync(args.outDir, { recursive: true });
+        // 先开页面占位以便附着 CDP session（dashboard 页随后由 runScenarioA 复用同一 context 新开）
+        cdpTrace = await startCdpTracing(context);
+        traceInfo = {
+          file: path.join(args.outDir, `${label}-trace.json`),
+          startEpochMs: Date.now(),
+        };
+        log(`[${label}] CDP tracing 已启动（v8.cpu_profiler + devtools.timeline，锚点=${traceInfo.startEpochMs}）`);
+      }
       if (job.scenario === 'A') {
         const result = await runScenarioA(context, extensionId, sampler, durations, failures);
         tInteractiveMs = result.tInteractiveMs;
         attribution = result.attribution;
         if (result.loafTop.length > 0) loafTop = { dashboard: result.loafTop };
         swOut = await captureSwOut(context);
+        if (traceInfo && cdpTrace) {
+          try {
+            const traceEvents = await cdpTrace.stop();
+            writeFileSync(traceInfo.file, `${JSON.stringify(traceEvents)}\n`, 'utf8');
+            log(`[${label}] CDP trace 已落盘 ${path.relative(CWD, traceInfo.file)}（events=${traceEvents.length}）`);
+          } catch (error) {
+            traceInfo = null;
+            log(`[${label}] CDP tracing stop 失败：${errMsg(error)}`);
+          }
+        }
         printAAttribution(label, attribution, swOut);
       } else {
         const result = await runScenarioB(context, args.listPage ?? SITE_LIST_URL, job.arm, sampler, durations, failures);
@@ -1901,7 +2003,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
     if (attribution) {
       // sidecar 只含性能元数据（tab 名/时间戳/消息类型名/计数），不走脱敏主报告通道
       const sidecarPath = path.join(args.outDir, `${label}-attribution.json`);
-      writeFileSync(sidecarPath, `${JSON.stringify({ attribution, swOut }, null, 2)}\n`, 'utf8');
+      writeFileSync(sidecarPath, `${JSON.stringify({ attribution, swOut, trace: traceInfo }, null, 2)}\n`, 'utf8');
       log(`[${label}] 归因 sidecar 已落盘 ${sidecarPath}`);
     }
   } finally {
@@ -1969,6 +2071,8 @@ function parseArgs(argv: string[]): Args {
     noGuard: false,
     outDir: DEFAULT_OUT_DIR,
     featuresOff: undefined,
+    cdpTrace: false,
+    procTimeline: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -2016,6 +2120,12 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--list-page':
         args.listPage = next();
+        break;
+      case '--cdp-trace':
+        args.cdpTrace = true;
+        break;
+      case '--proc-timeline':
+        args.procTimeline = true;
         break;
       default:
         throw new Error(`未知参数：${token}`);
