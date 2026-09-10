@@ -89,7 +89,7 @@ const DASHBOARD_NAV: readonly DashboardNavStep[] = [
   { tab: 'tab-settings', group: 'settings', sub: false },
 ] as const;
 
-type Scenario = 'A' | 'B';
+type Scenario = 'A' | 'B' | 'C';
 type Arm = 'enhanced' | 'control';
 
 /** 增强组：与 perfProfileSeed.ts 同口径（用户真实 profile 的增强开关） */
@@ -205,6 +205,10 @@ interface Durations {
   tabSettleMs: number;
   steadyMsA: number;
   steadyMsB: number;
+  steadyMsC: number;
+  cStaggerMs: number;
+  cScrollRounds: number;
+  cScrollIntervalMs: number;
   cooldownMs: number;
   siteGotoMs: number;
   enhancedMarkerMs: number;
@@ -226,6 +230,10 @@ function resolveDurations(quick: boolean): Durations {
         tabSettleMs: 700,
         steadyMsA: 10_000,
         steadyMsB: 8_000,
+        steadyMsC: 10_000,
+        cStaggerMs: 200,
+        cScrollRounds: 3,
+        cScrollIntervalMs: 400,
         cooldownMs: 3_000,
         siteGotoMs: 60_000,
         enhancedMarkerMs: 20_000,
@@ -244,6 +252,10 @@ function resolveDurations(quick: boolean): Durations {
         tabSettleMs: 1_000,
         steadyMsA: 60_000,
         steadyMsB: 30_000,
+        steadyMsC: 60_000,
+        cStaggerMs: 250,
+        cScrollRounds: 6,
+        cScrollIntervalMs: 800,
         cooldownMs: 10_000,
         siteGotoMs: 90_000,
         enhancedMarkerMs: 30_000,
@@ -259,6 +271,8 @@ interface Args {
   scenario: Scenario;
   arm: Arm;
   repeat: number;
+  /** 剧本 C：并发打开的原站 tab 数（模拟用户 15+ 页并发） */
+  tabs: number;
   quick: boolean;
   matrix: boolean;
   noGuard: boolean;
@@ -439,6 +453,7 @@ const SW_HOOK_SRC = `(() => {
     outBuckets: {},
   };
   self.__s0Hook = hook;
+  self.__s0Snapshots = [];
   try {
     chrome.runtime.onMessage.addListener((msg) => {
       try {
@@ -471,6 +486,10 @@ const SW_HOOK_SRC = `(() => {
             if (!hook.storageByKey[k]) hook.storageByKey[k] = { count: 0, bytes: 0 };
             hook.storageByKey[k].count += 1;
             hook.storageByKey[k].bytes += kb;
+            // S0-2 field-level diff: capture full payload at taskCenter write points (separate buffer, not in the hook object, to avoid heavy per-tick serialization)
+            if ((k === 'taskCenter:snapshot' || k === 'taskCenter:dedupeIndex') && self.__s0Snapshots) {
+              try { self.__s0Snapshots.push({ k: k, at: Date.now() - hook.installedAt, c: combo, len: kb, t: JSON.stringify(v) || '' }); } catch (err) {}
+            }
           }
         } catch (err) {}
       } catch (err) {}
@@ -625,6 +644,27 @@ const SW_OUT_EXPR = `(() => {
   };
 })()`;
 
+/** SW taskCenter write-point payload drain (S0-2 field-level diff dedicated; drain semantics: fetch and clear) */
+const SW_SNAPSHOTS_DRAIN_EXPR = `(() => {
+  const arr = self.__s0Snapshots || [];
+  self.__s0Snapshots = [];
+  return arr;
+})();
+`;
+/** S0-1 第二步：dashboard render 分段探针缓冲 drain（window.__s1Segs，由 untracked 探针 perfS1Probe.ts 写入；drain 语义：取走即清） */
+const S1_SEGS_DRAIN_EXPR = `(() => {
+  const b = window.__s1Segs;
+  if (!Array.isArray(b) || b.length === 0) return null;
+  return b.splice(0, b.length);
+})()`;
+interface S1SegRec {
+  tab: string;
+  seg: string;
+  ms: number;
+  t: number;
+  extra?: Record<string, number>;
+  err?: 1;
+}
 /** seed 守卫：确认 profile 已 seed 到真实规模（viewed≥15000） */
 const GUARD_EXPR = `(() => {
   return new Promise((resolve, reject) => {
@@ -683,6 +723,16 @@ interface SwHookState {
   outMessages: number;
   outByType: Record<string, number>;
   outBuckets: Record<string, number>;
+}
+
+interface SwSnapshotRec {
+  k: string;
+  /** relative to SW hook installation (ms) */
+  at: number;
+  /** key combo of that set */
+  c: string;
+  len: number;
+  t: string;
 }
 
 interface SwAcc {
@@ -1014,6 +1064,10 @@ class RunSampler {
   private readonly completedPhases: PhaseAcc[] = [];
   private readonly allSamples: DiagnosticSample[] = [];
   private readonly totals: SwAcc = newSwAcc();
+  /** S0-2: full capture of taskCenter write-point payloads (drained each tick from the SW side) */
+  snapshots: SwSnapshotRec[] = [];
+  /** S0-1 第二步: dashboard render 分段计时记录（drained each tick from page side, 仅 scenario A 有值） */
+  s1Segs: S1SegRec[] = [];
   private stopped = false;
   private readonly loopDone: Promise<void>;
 
@@ -1046,7 +1100,7 @@ class RunSampler {
     await Promise.race([this.loopDone, sleep(timeoutMs)]);
   }
 
-  finish(): { phases: PhaseReport[]; allSamples: DiagnosticSample[]; totals: SwAcc; loopDone: Promise<void> } {
+  finish(): { phases: PhaseReport[]; allSamples: DiagnosticSample[]; totals: SwAcc; s1Segs: S1SegRec[]; loopDone: Promise<void> } {
     this.stop();
     this.phaseAcc.endedAt = Date.now();
     this.completedPhases.push(this.phaseAcc);
@@ -1054,6 +1108,7 @@ class RunSampler {
       phases: this.completedPhases.map(finalizePhase),
       allSamples: this.allSamples,
       totals: this.totals,
+      s1Segs: this.s1Segs,
       loopDone: this.loopDone,
     };
   }
@@ -1160,6 +1215,12 @@ class RunSampler {
       } catch {
         // 页面导航中，下一轮重试
       }
+      try {
+        const segs = await page.evaluate<S1SegRec[] | null>(S1_SEGS_DRAIN_EXPR);
+        if (segs && segs.length > 0) this.s1Segs.push(...segs);
+      } catch {
+        // 页面导航中，下一轮重试（该 tick 的分段记录会随页面导航丢失，可接受）
+      }
     }
     if (tickHeapPeakBytes !== null) {
       acc.heapPeakBytes = Math.max(acc.heapPeakBytes ?? 0, tickHeapPeakBytes);
@@ -1180,6 +1241,16 @@ class RunSampler {
       this.allSamples.push(sample);
       // 同步进当前相，修「每相诊断恒空、只有 totals 有值」
       acc.samples.push(sample);
+    }
+  }
+
+  /** Drain taskCenter payloads from the SW side (independent of the hook object, does not affect existing delta baselines) */
+  private async drainSwSnapshots(sw: Worker): Promise<void> {
+    try {
+      const recs = (await sw.evaluate(SW_SNAPSHOTS_DRAIN_EXPR)) as SwSnapshotRec[] | null;
+      if (recs && recs.length > 0) this.snapshots.push(...recs);
+    } catch {
+      // SW is temporarily stopped; retry on next round (payloads in the old SW instance are lost, acceptable, noted in docs)
     }
   }
 
@@ -1205,6 +1276,7 @@ class RunSampler {
       }
       return;
     }
+    void this.drainSwSnapshots(sw);
     const hook = value?.hook;
     if (!hook) {
       this.swTickCount += 1;
@@ -1400,6 +1472,23 @@ interface LongTaskBuffer {
   timeOrigin: number;
   entries: { s: number; d: number }[];
   rafStalls?: { t: number; d: number }[];
+  loaf?: LoafEntry[];
+}
+
+/** 剧本 C：逐 tab 归因记录（sidecar 落盘 + 主报告 perTab 字段） */
+interface PerTabRec {
+  tab: number;
+  url: string;
+  closed: boolean;
+  longTaskCount: number;
+  longTaskTotalMs: number;
+  longTaskMaxMs: number;
+  rafStallCount: number;
+  rafStallTotalMs: number;
+  rafStallMaxMs: number;
+  jsHeapUsedBytes: number | null;
+  nodes: number | null;
+  loafTop: LoafTopEntry[];
 }
 
 /** 长任务按 startTime（document 相对，经 timeOrigin 换算 epoch）归因到 tab 时间窗。
@@ -1714,6 +1803,216 @@ async function runScenarioB(
   return { tInteractiveMs, loafTop };
 }
 
+/** 剧本 C：并发打开 N 个增强原站 tab（默认 16，--tabs 可调）。
+ * 复现用户反馈：同时打开 15+ 页面时浏览器与单个页面的 CPU/内存异常飙高、整体卡顿。
+ * 口径说明：
+ *   - RunSampler 逐 tick drain 全部被 track 页面，byPhase 聚合值 = 全部 tab 之和（浏览器级）；
+ *   - perTab sidecar 用页面侧全量累计 buffer（longTaskAll/rafStallAll，不随 drain 重置）+ CDP 堆指标，
+ *     给出逐 tab 的卡顿分布与 JS heap，回答「哪几个 tab 在吃资源」。
+ *   - 逐 tab 长任务数为数组截断口径（longTaskAll≤5000 / rafStallAll≤2500），极端卡顿 tab 可能低估；
+ *     权威总量以 byPhase 聚合（drain 口径）为准。
+ */
+async function runScenarioC(
+  context: BrowserContext,
+  listUrl: string,
+  arm: Arm,
+  tabCount: number,
+  sampler: RunSampler,
+  durations: Durations,
+  failures: string[],
+): Promise<{ tInteractiveMs: number; perTab: PerTabRec[] }> {
+  await context.addCookies([
+    { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
+  ]).catch(() => {});
+
+  // --- 门卫 tab：年龄门 + 登录墙检测（与剧本 B 同口径）---
+  const gate = await context.newPage();
+  sampler.trackPage(gate);
+  let gateLoaded = false;
+  let loginWall = false;
+  try {
+    await gate.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
+    gateLoaded = true;
+  } catch (error) {
+    failures.push(`C: 门卫 tab 加载失败: ${errMsg(error)}`);
+  }
+  if (gateLoaded) {
+    for (let round = 0; round < 2; round += 1) {
+      const yes = gate.locator('a[href*="over18?respond=1"]').first();
+      try {
+        await yes.waitFor({ state: 'visible', timeout: 15_000 });
+      } catch {
+        break; // 无年龄门
+      }
+      try {
+        await yes.click({ timeout: 10_000 });
+        await gate.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {});
+        await sleep(1_000);
+      } catch (error) {
+        failures.push(`C: 年龄门点击失败: ${errMsg(error)}`);
+        break;
+      }
+    }
+    const onLoginPage = await gate.evaluate(() => location.pathname.startsWith('/login')).catch(() => false);
+    const over18Count = await gate.locator('a[href*="over18?respond=1"]').count().catch(() => 0);
+    if (onLoginPage && over18Count === 0) {
+      loginWall = true;
+      failures.push('C: 站点登录墙（年龄验证后仍停留 /login，列表不渲染）——先运行 pnpm tsx scripts/loginPerfS0.ts 在 perf-s0 profile 建立登录态后重跑');
+    }
+  }
+  if (!gateLoaded || loginWall) {
+    sampler.setPhase('cooldown');
+    await sleep(1_000);
+    await gate.close().catch(() => {});
+    return { tInteractiveMs: 0, perTab: [] };
+  }
+
+  const pages: Page[] = [gate];
+  const startedAt = Date.now();
+
+  // --- 门卫 tab 增强标记（同 B 口径）---
+  if (arm === 'enhanced') {
+    try {
+      await gate.waitForSelector('.x-btn, .jdb-list-status-actions', { timeout: durations.enhancedMarkerMs });
+    } catch {
+      failures.push('C: 门卫 tab 增强标记（.x-btn/.jdb-list-status-actions）未出现——站点可能被拦截或增强未注入');
+    }
+  } else {
+    await sleep(durations.controlColdMs);
+  }
+
+  // --- 并发打开其余 N-1 个 tab（stagger 模拟用户连续打开）---
+  for (let i = 1; i < tabCount; i += 1) {
+    const page = await context.newPage();
+    sampler.trackPage(page);
+    try {
+      await page.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
+    } catch (error) {
+      failures.push(`C: tab${i + 1} 加载失败: ${errMsg(error)}`);
+    }
+    pages.push(page);
+    if (i < tabCount - 1) await sleep(durations.cStaggerMs);
+  }
+
+  // --- 其余 tab 等增强标记（并行，各自独立预算）---
+  if (arm === 'enhanced') {
+    await Promise.all(
+      pages.map(async (page, idx) => {
+        if (idx === 0) return;
+        try {
+          await page.waitForSelector('.x-btn, .jdb-list-status-actions', { timeout: durations.enhancedMarkerMs });
+        } catch {
+          failures.push(`C: tab${idx + 1} 增强标记未出现`);
+        }
+      }),
+    );
+  }
+  const tInteractiveMs = Date.now() - startedAt;
+  log(`[C] ${pages.length} tab 就绪（增强注入/加载）=${tInteractiveMs}ms`);
+  await sleep(durations.coldSettleMs);
+
+  sampler.setPhase('warmup');
+  log('[C] phase: warmup');
+  await sleep(durations.warmupMs);
+
+  sampler.setPhase('interaction');
+  log(`[C] phase: interaction（${durations.cScrollRounds} 轮 × ${pages.length} tab 滚动）`);
+  for (let r = 0; r < durations.cScrollRounds; r += 1) {
+    for (const page of pages) {
+      await page.evaluate(() => window.scrollBy(0, 1400)).catch(() => {});
+    }
+    await sleep(durations.cScrollIntervalMs);
+  }
+  for (const page of pages) {
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  }
+  await sleep(500);
+
+  sampler.setPhase('steady');
+  log(`[C] phase: steady（${durations.steadyMsC}ms，${pages.length} tab 并发 smart 调度）`);
+  await sleep(durations.steadyMsC);
+
+  // --- 逐 tab 终态归因（全量累计 buffer + CDP 堆指标）---
+  const perTab: PerTabRec[] = [];
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i];
+    const rec: PerTabRec = {
+      tab: i + 1,
+      url: '',
+      closed: false,
+      longTaskCount: 0,
+      longTaskTotalMs: 0,
+      longTaskMaxMs: 0,
+      rafStallCount: 0,
+      rafStallTotalMs: 0,
+      rafStallMaxMs: 0,
+      jsHeapUsedBytes: null,
+      nodes: null,
+      loafTop: [],
+    };
+    try {
+      rec.url = page.url();
+    } catch {
+      rec.closed = true;
+    }
+    if (!rec.closed) {
+      try {
+        const data = await page.evaluate<LongTaskBuffer | null>(LONGTASK_ALL_EXPR).catch(() => null);
+        if (data) {
+          for (const entry of data.entries) {
+            rec.longTaskCount += 1;
+            rec.longTaskTotalMs += entry.d;
+            if (entry.d > rec.longTaskMaxMs) rec.longTaskMaxMs = entry.d;
+          }
+          for (const entry of data.rafStalls ?? []) {
+            rec.rafStallCount += 1;
+            rec.rafStallTotalMs += entry.d;
+            if (entry.d > rec.rafStallMaxMs) rec.rafStallMaxMs = entry.d;
+          }
+          rec.loafTop = summarizeLoafTop(data.loaf, 5);
+        }
+      } catch {
+        rec.closed = true;
+      }
+    }
+    if (!rec.closed) {
+      try {
+        const session = await page.context().newCDPSession(page);
+        await session.send('Performance.enable');
+        const response = (await session.send('Performance.getMetrics')) as {
+          metrics?: Array<{ name: string; value: number }>;
+        };
+        for (const metric of response.metrics ?? []) {
+          if (!Number.isFinite(metric.value)) continue;
+          if (metric.name === 'JSHeapUsedSize' || metric.name === 'JSUsedHeapSize') {
+            rec.jsHeapUsedBytes = Math.round(metric.value);
+          } else if (metric.name === 'Nodes') {
+            rec.nodes = Math.round(metric.value);
+          }
+        }
+        await session.detach().catch(() => {});
+      } catch {
+        // CDP 取堆失败，保留 null（不阻断收尾）
+      }
+    }
+    perTab.push(rec);
+  }
+  for (const rec of perTab) {
+    const heapMb = rec.jsHeapUsedBytes === null ? '?' : `${(rec.jsHeapUsedBytes / 1048576).toFixed(1)}MB`;
+    log(
+      `[C] tab${rec.tab}: longTask ${rec.longTaskCount}个/${Math.round(rec.longTaskTotalMs)}ms(max ${Math.round(rec.longTaskMaxMs)}) ` +
+        `rafStall ${rec.rafStallCount}个/${Math.round(rec.rafStallTotalMs)}ms(max ${Math.round(rec.rafStallMaxMs)}) heap=${heapMb} nodes=${rec.nodes ?? '?'}`,
+    );
+  }
+  sampler.setPhase('cooldown');
+  log(`[C] phase: cooldown（关闭 ${pages.length} tab）`);
+  for (const page of pages) {
+    await page.close().catch(() => {});
+  }
+  await sleep(durations.cooldownMs);
+  return { tInteractiveMs, perTab };
+}
+
 // ---------------------------------------------------------------------------
 // 单跑编排 + 报告
 // ---------------------------------------------------------------------------
@@ -1740,6 +2039,8 @@ interface RunReport {
   tInteractiveMs: number;
   /** B6 函数级卡顿归因：页面名 → top-N（LoAF attributions 聚合） */
   loafTop: Record<string, LoafTopEntry[]> | null;
+  /** 剧本 C：逐 tab 卡顿/堆内存归因（全量测量窗口累计） */
+  perTab?: PerTabRec[];
   byPhase: Record<string, PhaseReport>;
   totals: {
     diagnostic: ReturnType<typeof summarizeDiagnosticSamples>;
@@ -1906,6 +2207,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
     let finished: ReturnType<RunSampler['finish']> | null = null;
     let tInteractiveMs = 0;
     let attribution: AAttribution | null = null;
+    let perTab: PerTabRec[] | undefined;
     let swOut: SwOutSnapshot | null = null;
     let loafTop: Record<string, LoafTopEntry[]> | null = null;
     let traceInfo: { file: string; startEpochMs: number } | null = null;
@@ -1938,10 +2240,31 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
           }
         }
         printAAttribution(label, attribution, swOut);
-      } else {
+      } else if (job.scenario === 'B') {
         const result = await runScenarioB(context, args.listPage ?? SITE_LIST_URL, job.arm, sampler, durations, failures);
         tInteractiveMs = result.tInteractiveMs;
         if (Object.keys(result.loafTop).length > 0) loafTop = result.loafTop;
+      } else {
+        mkdirSync(args.outDir, { recursive: true });
+        const result = await runScenarioC(
+          context,
+          args.listPage ?? SITE_LIST_URL,
+          job.arm,
+          args.tabs,
+          sampler,
+          durations,
+          failures,
+        );
+        tInteractiveMs = result.tInteractiveMs;
+        if (result.perTab.length > 0) perTab = result.perTab;
+        writeFileSync(path.join(args.outDir, `${label}-per-tab.json`), `${JSON.stringify({
+          scenario: 'C',
+          arm: job.arm,
+          tabCount: args.tabs,
+          tInteractiveMs: result.tInteractiveMs,
+          perTab: result.perTab,
+        }, null, 2)}\n`, 'utf8');
+        log(`[${label}] per-tab sidecar 已落盘 ${path.relative(CWD, path.join(args.outDir, `${label}-per-tab.json`))}`);
       }
       if (loafTop) printLoafTop(label, loafTop);
       finished = sampler.finish();
@@ -1972,7 +2295,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
         extensionVersion: extensionVersion(),
         gitSha: gitShortSha(),
         profileDir: path.relative(CWD, PROFILE_DIR),
-        siteListUrl: job.scenario === 'B' ? (args.listPage ?? SITE_LIST_URL) : null,
+        siteListUrl: job.scenario === 'B' || job.scenario === 'C' ? (args.listPage ?? SITE_LIST_URL) : null,
         featuresOff: args.featuresOff ?? [],
         quick: args.quick,
         seedGuard: guard,
@@ -1980,6 +2303,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
       },
       tInteractiveMs,
       loafTop,
+      perTab,
       byPhase,
       totals: {
         diagnostic: summarizeDiagnosticSamples(allSamples),
@@ -1999,6 +2323,16 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
     const outPath = path.join(args.outDir, `${label}.json`);
     writeFileSync(outPath, `${JSON.stringify(redacted, null, 2)}\n`, 'utf8');
     log(`[${label}] 报告已落盘 ${outPath}`);
+    if (sampler.snapshots.length > 0) {
+      const snapPath = path.join(args.outDir, `${label}-sw-snapshots.json`);
+      writeFileSync(snapPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), count: sampler.snapshots.length, records: sampler.snapshots }, null, 2)}\n`, 'utf8');
+      log(`[${label}] SW snapshot payload sidecar written to ${snapPath} (count=${sampler.snapshots.length})`);
+    }
+    if (sampler.s1Segs.length > 0) {
+      const segsPath = path.join(args.outDir, `${label}-s1-segs.json`);
+      writeFileSync(segsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), count: sampler.s1Segs.length, records: sampler.s1Segs }, null, 2)}\n`, 'utf8');
+      log(`[${label}] S1 render-seg sidecar 已落盘 ${segsPath} (count=${sampler.s1Segs.length})`);
+    }
     printRunSummary(label, report);
     if (attribution) {
       // sidecar 只含性能元数据（tab 名/时间戳/消息类型名/计数），不走脱敏主报告通道
@@ -2066,6 +2400,7 @@ function parseArgs(argv: string[]): Args {
     scenario: 'A',
     arm: 'enhanced',
     repeat: 1,
+    tabs: 16,
     quick: false,
     matrix: false,
     noGuard: false,
@@ -2085,7 +2420,7 @@ function parseArgs(argv: string[]): Args {
     switch (token) {
       case '--scenario': {
         const value = next().toUpperCase();
-        if (value !== 'A' && value !== 'B') throw new Error(`--scenario 只接受 A|B，收到 ${value}`);
+        if (value !== 'A' && value !== 'B' && value !== 'C') throw new Error(`--scenario 只接受 A|B|C，收到 ${value}`);
         args.scenario = value;
         break;
       }
@@ -2097,6 +2432,12 @@ function parseArgs(argv: string[]): Args {
       }
       case '--repeat': {
         args.repeat = Math.max(1, Math.trunc(Number(next()) || 1));
+        break;
+      }
+      case '--tabs': {
+        const n = Math.trunc(Number(next()) || 16);
+        if (!(n >= 2 && n <= 40)) throw new Error(`--tabs 取值 2~40，收到 ${n}`);
+        args.tabs = n;
         break;
       }
       case '--quick':
@@ -2137,14 +2478,14 @@ function parseArgs(argv: string[]): Args {
 function buildJobs(args: Args): Job[] {
   if (args.matrix) {
     const jobs: Job[] = [];
-    for (const scenario of ['A', 'B'] as const) {
+    for (const scenario of ['A', 'B', 'C'] as const) {
       for (const arm of ['enhanced', 'control'] as const) {
         for (let repeat = 1; repeat <= 3; repeat += 1) jobs.push({ scenario, arm, repeat });
       }
     }
     return jobs;
   }
-  if (args.quick) return [{ scenario: 'A', arm: 'enhanced', repeat: 1 }];
+  if (args.quick) return [{ scenario: args.scenario, arm: args.arm, repeat: 1 }];
   const jobs: Job[] = [];
   for (let repeat = 1; repeat <= args.repeat; repeat += 1) {
     jobs.push({ scenario: args.scenario, arm: args.arm, repeat });
