@@ -21,7 +21,7 @@ import {
 } from './taskPolicy';
 import { TaskStateStore } from './taskStateStore';
 import { TASK_CENTER_MESSAGE } from '../../shared/taskCenterProtocol';
-import type { GlobalTaskDescriptor, GlobalTaskRuntimeState } from '../../shared/taskCenterTypes';
+import type { GlobalTaskDescriptor, GlobalTaskRecord, GlobalTaskRuntimeState } from '../../shared/taskCenterTypes';
 import { computeTaskDisposition, getEffectiveBucketLimit } from './taskCenterPolicyRuntime';
 
 /** 租约响应：是否授予执行权，未授予时附带等待原因 */
@@ -44,7 +44,10 @@ type QueueCandidate = {
 export class GlobalTaskCenter {
   private store = new TaskStateStore();
   private dedupeIndex = new Map<string, string>();
-  private readonly taskRetentionMs = 60 * 60 * 1000;
+  // S1-B: 1h → 5min —— 终态记录仅作历史展示，缩短保留期防止快照无界增长（S0-2/S0-3：每轮净增 +39,620B）
+  private readonly taskRetentionMs = 5 * 60 * 1000;
+  // S1-B: 终态记录条数硬上限（LRU），与保留期共同保证快照体积有界
+  private readonly terminalTaskMax = 50;
   private readonly pendingTaskMaxAgeMs = 60 * 1000;
   private readonly pausedTaskMaxAgeMs = 3 * 60 * 1000;
   private readonly hiddenRunningTaskMaxAgeMs = 45 * 1000;
@@ -58,6 +61,14 @@ export class GlobalTaskCenter {
   private isRestored = false;
   private persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly persistDebounceMs = 500;
+  // S1-B (I-4a): 冷启动写合并窗口 —— 首次写后 3s 内的突发写合并为窗口结束时一次写（S0 实测 0~3s 写风暴 7~8 次 → ≤2 次）
+  private readonly persistBurstWindowMs = 3000;
+  private persistBurstAnchorMs: number | null = null;
+  private persistBurstTimer: ReturnType<typeof setTimeout> | null = null;
+  private persistBurstPendingJson: string | null = null;
+  private persistBurstPendingPayload: Record<string, unknown> | null = null;
+  private persistBurstWaiters: Array<() => void> = [];
+  private lastPersistedContentJson: string | null = null;
   private lastGrantedLeasePersistence: Promise<void> = Promise.resolve();
 
   private getPhaseWeight(phase: string): number {
@@ -156,23 +167,84 @@ export class GlobalTaskCenter {
 
   // P1 FIX: 定期快照到 chrome.storage，防止 Service Worker 重启丢失状态
   // B5 (2026-09-07): snapshot 与 dedupeIndex 合并为单次 storage.set（原两次独立 set → 写次数减半）
-  private persistToStorage(): Promise<void> {
+  // S1-B (I-4a): 写合并 —— (1) 快照内容未变化时跳过写（覆盖 30s 周期兜底与防抖写）；
+  // (2) 冷启动首次写后 3s 内的突发写合并为窗口结束时一次写
+  private persistToStorage(options: { immediate?: boolean } = {}): Promise<void> {
     const storage = typeof chrome !== 'undefined' ? chrome.storage?.local : undefined;
     if (!storage) return Promise.resolve();
-    const snapshot = {
-      tasks: this.store.listTasks().map(record => ({
-        descriptor: record.descriptor,
-        runtime: record.runtime,
-      })),
-      completedLabels: Array.from(this.completedTaskLabels),
-      savedAt: Date.now(),
-    };
-    const payload: Record<string, unknown> = { [this.storageKey]: snapshot };
+    const { contentJson, payload } = this.buildPersistContent();
+    // I-4a: 内容未变 → 跳过全量重写
+    if (contentJson === this.lastPersistedContentJson) return Promise.resolve();
+    const now = Date.now();
+    // 首次写立即落盘并锚定合并窗口；窗口结束后保持立即写；immediate（租约授予等并发边界写）豁免合并
+    if (
+      this.persistBurstAnchorMs === null
+      || now >= this.persistBurstAnchorMs + this.persistBurstWindowMs
+      || options.immediate
+    ) {
+      if (this.persistBurstAnchorMs === null) this.persistBurstAnchorMs = now;
+      return this.commitPersistToStorage(storage, contentJson, payload);
+    }
+    // I-4a: 冷启动合并窗口内 → 合并为窗口结束时一次写
+    this.persistBurstPendingJson = contentJson;
+    this.persistBurstPendingPayload = payload;
+    if (this.persistBurstTimer === null) {
+      const delay = Math.max(0, this.persistBurstAnchorMs + this.persistBurstWindowMs - Date.now());
+      this.persistBurstTimer = setTimeout(() => this.flushPersistBurst(storage), delay);
+    }
+    return new Promise<void>((resolve) => {
+      this.persistBurstWaiters.push(resolve);
+    });
+  }
+
+  /** 构建持久化 payload 与内容指纹（savedAt 不进指纹，纯时间戳变化不视为内容变化） */
+  private buildPersistContent(): { contentJson: string; payload: Record<string, unknown> } {
+    const tasks = this.store.listTasks().map(record => ({
+      descriptor: record.descriptor,
+      runtime: record.runtime,
+    }));
+    const completedLabels = Array.from(this.completedTaskLabels);
+    const contentJson = JSON.stringify({
+      tasks,
+      completedLabels,
+      dedupe: this.dedupeIndex.size > 0 ? Array.from(this.dedupeIndex.entries()) : null,
+    });
     // P2 FIX: 同批持久化 dedupe index，防止 SW 重启后 dedupe 失效导致重复任务
+    const payload: Record<string, unknown> = {
+      [this.storageKey]: { tasks, completedLabels, savedAt: Date.now() },
+    };
     if (this.dedupeIndex.size > 0) {
       payload[this.dedupeStorageKey] = Object.fromEntries(this.dedupeIndex.entries());
     }
+    return { contentJson, payload };
+  }
+
+  private commitPersistToStorage(
+    storage: { set: (items: Record<string, unknown>) => void | Promise<void> },
+    contentJson: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    // storage.set 失败原本即 fire-and-forget（catch 吞掉）；基线同步更新，避免跳过逻辑依赖微任务时序
+    this.lastPersistedContentJson = contentJson;
     return Promise.resolve(storage.set(payload)).catch(() => undefined).then(() => undefined);
+  }
+
+  private flushPersistBurst(storage: { set: (items: Record<string, unknown>) => void | Promise<void> }): void {
+    this.persistBurstTimer = null;
+    const pendingJson = this.persistBurstPendingJson;
+    const pendingPayload = this.persistBurstPendingPayload;
+    this.persistBurstPendingJson = null;
+    this.persistBurstPendingPayload = null;
+    const waiters = this.persistBurstWaiters;
+    this.persistBurstWaiters = [];
+    const done = (): void => {
+      for (const resolve of waiters) resolve();
+    };
+    if (pendingJson === null || pendingPayload === null || pendingJson === this.lastPersistedContentJson) {
+      done();
+      return;
+    }
+    this.commitPersistToStorage(storage, pendingJson, pendingPayload).then(done);
   }
 
   /** Collapse bursty task completions into one full snapshot write. */
@@ -400,6 +472,24 @@ export class GlobalTaskCenter {
         }
       }
     }
+
+    // S1-B: 终态任务 LRU 上限 —— 保留期只处理「过期」记录，此处再对终态记录条数做硬封顶，
+    // 保证多页高并发时快照体积有界（最多保留 terminalTaskMax 条终态记录，按 endedAt 淘汰最旧）
+    const terminalRecords = this.store.listTasks().filter(
+      (record): record is GlobalTaskRecord => ['done', 'error', 'canceled'].includes(record.runtime.status),
+    );
+    if (terminalRecords.length > this.terminalTaskMax) {
+      const terminalTsOf = (record: GlobalTaskRecord): number =>
+        record.runtime.endedAt || record.runtime.heartbeatTs || record.descriptor.createdAt;
+      const ordered = [...terminalRecords].sort((a, b) => terminalTsOf(a) - terminalTsOf(b));
+      const evictCount = terminalRecords.length - this.terminalTaskMax;
+      for (const record of ordered.slice(0, evictCount)) {
+        this.store.deleteTask(record.descriptor.taskId);
+        if (record.descriptor.dedupeKey && this.dedupeIndex.get(record.descriptor.dedupeKey) === record.descriptor.taskId) {
+          this.dedupeIndex.delete(record.descriptor.dedupeKey);
+        }
+      }
+    }
   }
 
   registerTask(descriptor: GlobalTaskDescriptor, sender?: chrome.runtime.MessageSender): TaskRegistrationResult {
@@ -603,7 +693,8 @@ export class GlobalTaskCenter {
     this.store.setTask(taskId, task);
     // A granted lease is the cross-page concurrency boundary. Persist it now
     // so an MV3 worker restart cannot admit a competing heavy task first.
-    this.lastGrantedLeasePersistence = this.persistToStorage();
+    // S1-B: immediate 豁免冷启动合并窗，保证并发边界写不被延迟
+    this.lastGrantedLeasePersistence = this.persistToStorage({ immediate: true });
     return { granted: true };
   }
 
