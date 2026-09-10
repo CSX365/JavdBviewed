@@ -17,10 +17,9 @@
     overflow: visible;
     padding: 14px;
     border: 1px solid var(--actors-border);
-    background:
-        radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.10), transparent 34%),
-        radial-gradient(circle at 90% 8%, rgba(8, 145, 178, 0.12), transparent 30%),
-        var(--surface-primary);
+    /* P-2（cycle-5 S1-A）：移除整页级双 radial-gradient 背景。旧背景使 28 行整层（~1188×3133）
+       以同尺寸位图形式参与栅格（trace PaintImage 实证）；渐变仅 0.10~0.12 透明度，视觉损失可忽略。 */
+    background: var(--surface-primary);
 }
 
 [data-theme="dark"] .actors-page {
@@ -30,10 +29,7 @@
     --actors-shadow: 0 20px 56px rgba(0, 0, 0, 0.30);
     --actors-shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.22);
     --actors-glow: rgba(96, 165, 250, 0.2);
-    background:
-        radial-gradient(circle at 10% 0%, rgba(96, 165, 250, 0.14), transparent 34%),
-        radial-gradient(circle at 90% 8%, rgba(45, 212, 191, 0.10), transparent 30%),
-        var(--surface-primary);
+    background: var(--surface-primary);
 }
 
 .actors-page-hero {
@@ -562,12 +558,18 @@
     border: 1px solid var(--border-primary);
     border-radius: 16px;
     padding: 0;
-    transition: all 0.3s ease;
+    /* P-1a（cycle-5 S1-A）：transition: all → 显式属性（hover 实际只变 transform/box-shadow/border-color），
+       避免 28 张卡对任意属性变化都起过渡。 */
+    transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
     position: relative;
     overflow: hidden;
     height: 380px;
     display: flex;
     flex-direction: column;
+    /* L-1（cycle-5 S1-A）：视口外卡片跳过布局/绘制。card 模式高度恒为 380px，
+       contain-intrinsic-size 用 auto 380px（先记实测值，未渲染时回退 380px）。 */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 380px;
 }
 
 /* 头像容器 - 毛玻璃背景 */
@@ -593,8 +595,8 @@
         rgba(255, 182, 193, 0.6) 0%,
         rgba(255, 105, 180, 0.4) 50%,
         rgba(255, 192, 203, 0.6) 100%); /* 默认粉色（女性） */
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    /* P-1b（cycle-5 S1-A）：移除 backdrop-filter: blur(20px)——其后方是 .actor-card 纯色背景，
+       模糊纯色无视觉效果，却使每张卡（×28）多一条 180px 高的 blur 渲染通道。 */
     z-index: 1;
 }
 
@@ -1788,6 +1790,8 @@
 .actor-list .actor-card {
     height: auto;
     min-height: 100px;
+    /* L-1（cycle-5 S1-A）：list 模式行高不稳定，固有尺寸回退值取 120px。 */
+    contain-intrinsic-size: auto 120px;
     display: grid;
     grid-template-columns: auto 1fr auto;
     align-items: center;

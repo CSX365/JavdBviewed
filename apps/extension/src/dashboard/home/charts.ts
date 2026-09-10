@@ -466,6 +466,35 @@ function bindHomeChartsThemeListener(): void {
   } catch {}
 }
 
+/** L-4（cycle-5 S1-A）：视口外图表懒渲染——图表容器进入视口（200px 预缘）前不启动渲染；
+ * 会话失效（被顶替 / tab 隐藏 / pagehide）立即 resolve，由调用方 canRender 门禁跳过渲染。 */
+function whenChartShellVisible(shell: HTMLElement | null, session: HomeChartSession): Promise<void> {
+  if (!shell || typeof IntersectionObserver === 'undefined') return Promise.resolve();
+  try {
+    const rect = shell.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    if (rect.bottom > -200 && rect.top < vh + 200) return Promise.resolve();
+  } catch { return Promise.resolve(); }
+  return new Promise<void>(resolve => {
+    let done = false;
+    let io: IntersectionObserver | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      io?.disconnect();
+      session.signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    io = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) { finish(); break; }
+      }
+    }, { root: null, rootMargin: '200px 0px' });
+    session.signal.addEventListener('abort', finish, { once: true });
+    io.observe(shell);
+  });
+}
+
 async function renderHomeChartsWithEcharts(
   session: HomeChartSession,
   plan: HomeChartRenderPlan,
@@ -566,6 +595,8 @@ async function renderHomeChartsWithEcharts(
 
     try {
       if (statusEl) {
+        // L-4：状态分布卡在视口外时等待滚入再渲染
+        await whenChartShellVisible(statusShell, session);
         if (!canRender()) return;
         const c = getChart(statusEl, 'statusDonut');
         if (c) {
@@ -680,7 +711,9 @@ async function renderHomeChartsWithEcharts(
         };
         (W as any).__HOME_CHARTS__.__tagsTopPager = ctrl;
         const renderTask = scheduleHomeChartRender(() => {
-          if (canRender()) ctrl.render();
+          void whenChartShellVisible(tagsShell, session).then(() => {
+            if (canRender()) ctrl.render();
+          });
         });
         (W as any).__HOME_CHARTS__.__tagsTopRenderTask = renderTask;
 
@@ -948,6 +981,8 @@ async function renderHomeCharts(): Promise<void> {
     try {
       if (statusEl) {
         await yieldToBrowser();
+        // L-4：状态分布卡在视口外时等待滚入再渲染（首屏只渲染趋势行）
+        await whenChartShellVisible(statusShell, session);
         if (!isHomeChartSessionActive(session)) return;
         hideLoading(statusEl);
         const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -1059,7 +1094,9 @@ async function renderHomeCharts(): Promise<void> {
         };
         HC.__tagsTopPager = ctrl;
         const renderTask = scheduleHomeChartRender(() => {
-          if (isHomeChartSessionActive(session)) ctrl.render();
+          void whenChartShellVisible(tagsShell, session).then(() => {
+            if (isHomeChartSessionActive(session)) ctrl.render();
+          });
         });
         HC.__tagsTopRenderTask = renderTask;
 

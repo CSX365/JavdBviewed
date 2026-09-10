@@ -731,6 +731,9 @@
 
 .tab-section[data-tab-id="insights"] #insights-preview {
     min-height: 560px !important;
+    /* L-2（cycle-5 S1-A）：限高 + 内部滚动，长报告不撑爆页面布局 */
+    max-height: min(720px, 72vh);
+    overflow: auto;
     border: 1px solid var(--insights-border) !important;
     border-radius: 16px !important;
     background: var(--surface-primary) !important;

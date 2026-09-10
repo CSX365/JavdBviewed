@@ -33,8 +33,10 @@ export function adjustInsightsIframeHeight(iframe: HTMLIFrameElement): void {
           doc.documentElement.scrollHeight,
           doc.documentElement.offsetHeight,
         );
+        // L-2（cycle-5 S1-A）：预览 iframe 限高——长报告不再无限撑高 dashboard 文档
+        //（iframe 内容超限时由 iframe 自身滚动），与 CSS max-height 双保险。
         if (contentHeight > 0) {
-          iframe.style.height = `${contentHeight + 20}px`;
+          iframe.style.height = `${Math.min(contentHeight + 20, 720)}px`;
         }
       } catch {}
     };

@@ -145,23 +145,38 @@
       renderFallback();
     }
   }
+  function bootCharts(stats) {
+    var echarts = safeEcharts();
+    if (echarts) { renderChartEls(stats, echarts); return; }
+    loadEchartsScript().then(function (ready) {
+      if (ready) { renderChartEls(stats, ready); } else { renderFallback(); }
+    });
+  }
   function renderCharts(stats) {
     if (!stats) { renderFallback(); return; }
-    // KPI & 排行立即渲染（不依赖 ECharts），图表区待 ECharts 异步就绪后补齐
+    // KPI & 排行立即渲染（不依赖 ECharts）
     renderKpis(stats);
     renderRanking(stats);
-    var echarts = safeEcharts();
-    if (echarts) {
-      renderChartEls(stats, echarts);
-      return;
-    }
-    loadEchartsScript().then(function (ready) {
-      if (ready) {
-        renderChartEls(stats, ready);
-      } else {
-        renderFallback();
+    // L-2（cycle-5 S1-A）：ECharts（~1MB 脚本 + 3 图 init）延迟到 #charts 区进入视口
+    // （提前 200px 预载）才启动——预览 iframe 限高后图表通常在折叠线之下，
+    // 首屏不再为看不见的图表付出脚本加载/解析/渲染成本。
+    var chartsSec = document.getElementById('charts');
+    if (!chartsSec || !('IntersectionObserver' in window)) { bootCharts(stats); return; }
+    ['tags-pie','tags-top-bar','trend-line'].forEach(function(id){
+      var el = document.getElementById(id);
+      if (el && !el.innerHTML.trim()) {
+        var ph = document.createElement('div');
+        ph.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:12px;';
+        ph.textContent = '图表将在滚动到时自动加载';
+        el.appendChild(ph);
       }
     });
+    var io = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) { io.disconnect(); bootCharts(stats); break; }
+      }
+    }, { root: null, rootMargin: '200px' });
+    io.observe(chartsSec);
   }
   try {
     onReady(function(){

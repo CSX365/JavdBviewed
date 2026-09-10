@@ -109,10 +109,11 @@ function buildNewWorkCoverHtml(work: NewWorkRecord): string {
     return '<div class="new-work-cover-wrap"><div class="new-work-cover"></div></div>';
   }
 
+  // L-3（cycle-5 S1-A）：hover 放大预览图改为进入视口交互时懒实例化（newWorksListRuntime.attachNewWorkItemListeners），
+  // 初始 HTML 只保留 80×60 小封面，避免每个列表项都预建 560~820px 宽的大图层。
   return `
                 <div class="new-work-cover-wrap">
                     <img src="${work.coverImage}" alt="${work.title}" class="new-work-cover">
-                    <img src="${work.coverImage}" alt="${work.title}" class="new-work-cover-preview">
                 </div>
                 `;
 }

@@ -461,7 +461,15 @@
     transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
 }
 
+/* L-3（cycle-5 S1-A）：预览图为悬停时懒实例化，需等 load 完成后（.new-work-cover-preview-ready）才淡入，
+   避免首次悬停先闪现空白大框 */
 .new-work-cover-wrap:hover .new-work-cover-preview {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.96);
+    visibility: hidden;
+}
+
+.new-work-cover-wrap:hover .new-work-cover-preview.new-work-cover-preview-ready {
     opacity: 1;
     transform: translateY(-50%) scale(1);
     visibility: visible;

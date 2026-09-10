@@ -190,6 +190,24 @@ export function attachNewWorkItemListeners(
       handlers.updateBatchOperations();
     });
 
+    // L-3（cycle-5 S1-A）：hover 放大预览懒实例化——首次悬停才创建大预览 img（复用已下载的同 URL 封面），
+    // 之后常驻；替代旧版初始 HTML 双 <img> 同 URL（每项预建 560~820px 宽图层）。
+    const coverWrap = item.querySelector('.new-work-cover-wrap') as HTMLElement | null;
+    if (coverWrap) {
+      coverWrap.addEventListener('mouseenter', () => {
+        if (coverWrap.querySelector('.new-work-cover-preview')) return;
+        const cover = coverWrap.querySelector('img.new-work-cover') as HTMLImageElement | null;
+        const src = cover?.getAttribute('src');
+        if (!src) return;
+        const preview = doc.createElement('img');
+        preview.className = 'new-work-cover-preview';
+        preview.src = src;
+        preview.alt = cover?.alt || '';
+        preview.addEventListener('load', () => coverWrap.classList.add('new-work-cover-preview-ready'), { once: true });
+        coverWrap.appendChild(preview);
+      });
+    }
+
     item.addEventListener('click', async event => {
       const target = event.target as HTMLElement;
       const actionBtn = target.closest ? target.closest('.new-work-action-btn') : null;
