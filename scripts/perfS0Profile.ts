@@ -23,6 +23,8 @@
  *   pnpm tsx scripts/perfS0Profile.ts --scenario A --arm enhanced --repeat 1          # 单跑
  *   pnpm tsx scripts/perfS0Profile.ts --matrix                                        # 全矩阵 2 剧本×2 臂×3 重复（后台约 35-45 分钟）
  *   pnpm tsx scripts/perfS0Profile.ts --scenario B --list-page http://127.0.0.1:PORT/ # 本地 fixture 替代真站
+ *   pnpm tsx scripts/perfS0Profile.ts --scenario C --pages detail --tabs 16            # 16 个影片详情页（需 perf-s0 登录态）
+ *   pnpm tsx scripts/perfS0Profile.ts --scenario C --pages mix                         # 8 详情+6 列表+2 演员（混合真实用法，需登录态）
  *   pnpm tsx scripts/perfS0Profile.ts --no-guard                                       # 跳过 seed 守卫（已知数据就绪时）
  */
 import path from 'node:path';
@@ -273,6 +275,8 @@ interface Args {
   repeat: number;
   /** 剧本 C：并发打开的原站 tab 数（模拟用户 15+ 页并发） */
   tabs: number;
+  /** 剧本 C：页面组成——list（全列表页，cycle-5 默认口径）/ detail（全影片详情页）/ mix（8 详情+6 列表+2 演员，混合真实用法） */
+  pages: 'list' | 'detail' | 'mix';
   quick: boolean;
   matrix: boolean;
   noGuard: boolean;
@@ -1479,6 +1483,8 @@ interface LongTaskBuffer {
 interface PerTabRec {
   tab: number;
   url: string;
+  /** 就绪判定：marker（注入标记命中）/ settle（兜底稳定窗）/ marker-timeout / fail-login-wall / skipped（control 臂） */
+  readyBy: string;
   closed: boolean;
   longTaskCount: number;
   longTaskTotalMs: number;
@@ -1803,6 +1809,112 @@ async function runScenarioB(
   return { tInteractiveMs, loafTop };
 }
 
+/** 剧本 C：页面组成变体（--pages）与逐 tab 类型 */
+type CPagesVariant = 'list' | 'detail' | 'mix';
+type TabKind = 'list' | 'detail' | 'actor';
+
+/** 从门卫列表页收集 /v/ 影片详情链接（去重、绝对 URL，上限 count） */
+async function collectDetailUrls(page: Page, count: number): Promise<string[]> {
+  if (count <= 0) return [];
+  return page
+    .evaluate((n: number) => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const a of Array.from(document.querySelectorAll('a[href^="/v/"]'))) {
+        const href = a.getAttribute('href');
+        if (!href) continue;
+        let abs = '';
+        try {
+          abs = new URL(href, location.origin).toString();
+        } catch {
+          continue;
+        }
+        if (!seen.has(abs)) {
+          seen.add(abs);
+          out.push(abs);
+        }
+        if (out.length >= n) break;
+      }
+      return out;
+    }, count)
+    .catch(() => [] as string[]);
+}
+
+/** 运行时发现演员页 URL：探测 tab 打开首个详情页取第一个 a[href^="/act/"]。
+ * 详情页对匿名会话是登录墙，只能在已登录 perf-s0 profile 内运行；失败返回 null，调用方把演员 tab 降级为列表页（记 failures）。 */
+async function discoverActorUrl(
+  context: BrowserContext,
+  detailUrl: string,
+  failures: string[],
+): Promise<string | null> {
+  let page: Page | null = null;
+  try {
+    page = await context.newPage();
+    await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    const href = await page.locator('a[href^="/act/"]').first().getAttribute('href', { timeout: 20_000 });
+    if (!href) return null;
+    return new URL(href, 'https://javdb570.com').toString();
+  } catch {
+    failures.push('C-mix: 演员页 URL 发现失败（详情页未见 a[href^="/act/"]），演员 tab 降级为列表页');
+    return null;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+}
+
+/** 剧本 C：构建逐 tab URL 与类型组成。
+ * list=全列表页；detail=全详情页；mix=8 详情+6 列表+2 演员（非 16 tab 按比例缩放：actor=max(1,round(n/8))、list=round(n*6/16)、detail=其余）。
+ * 详情链接收集为空则整体降级列表页并记 failures。 */
+async function buildTabUrls(
+  context: BrowserContext,
+  gate: Page,
+  listUrl: string,
+  variant: CPagesVariant,
+  tabCount: number,
+  failures: string[],
+): Promise<{ urls: string[]; kinds: TabKind[] }> {
+  if (variant === 'list') {
+    return {
+      urls: Array.from({ length: tabCount }, () => listUrl),
+      kinds: Array.from({ length: tabCount }, () => 'list' as TabKind),
+    };
+  }
+  const actorCount = variant === 'mix' ? Math.max(1, Math.round(tabCount / 8)) : 0;
+  const listCount = variant === 'mix' ? Math.round((tabCount * 6) / 16) : 0;
+  const detailCount = Math.max(0, tabCount - listCount - actorCount);
+
+  const detailUrls = await collectDetailUrls(gate, detailCount);
+  if (detailUrls.length === 0) {
+    failures.push(`C-${variant}: 门卫页未收集到 /v/ 详情链接（站点结构变化?），全部 tab 降级为列表页`);
+    return {
+      urls: Array.from({ length: tabCount }, () => listUrl),
+      kinds: Array.from({ length: tabCount }, () => 'list' as TabKind),
+    };
+  }
+  if (detailUrls.length < detailCount) {
+    failures.push(`C-${variant}: 详情链接仅 ${detailUrls.length}/${detailCount}，不足 tab 以列表页补齐`);
+  }
+
+  let actorUrl: string | null = null;
+  if (actorCount > 0) actorUrl = await discoverActorUrl(context, detailUrls[0], failures);
+
+  const urls: string[] = [];
+  const kinds: TabKind[] = [];
+  for (let i = 0; i < detailCount; i += 1) {
+    kinds.push('detail');
+    urls.push(i < detailUrls.length ? detailUrls[i] : listUrl);
+  }
+  for (let i = 0; i < listCount; i += 1) {
+    kinds.push('list');
+    urls.push(listUrl);
+  }
+  for (let i = 0; i < actorCount; i += 1) {
+    kinds.push(actorUrl ? 'actor' : 'list');
+    urls.push(actorUrl ?? listUrl);
+  }
+  return { urls, kinds };
+}
+
 /** 剧本 C：并发打开 N 个增强原站 tab（默认 16，--tabs 可调）。
  * 复现用户反馈：同时打开 15+ 页面时浏览器与单个页面的 CPU/内存异常飙高、整体卡顿。
  * 口径说明：
@@ -1817,10 +1929,11 @@ async function runScenarioC(
   listUrl: string,
   arm: Arm,
   tabCount: number,
+  variant: CPagesVariant,
   sampler: RunSampler,
   durations: Durations,
   failures: string[],
-): Promise<{ tInteractiveMs: number; perTab: PerTabRec[] }> {
+): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; variant: CPagesVariant }> {
   await context.addCookies([
     { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
   ]).catch(() => {});
@@ -1864,11 +1977,19 @@ async function runScenarioC(
     sampler.setPhase('cooldown');
     await sleep(1_000);
     await gate.close().catch(() => {});
-    return { tInteractiveMs: 0, perTab: [] };
+    return { tInteractiveMs: 0, perTab: [], variant };
   }
 
   const pages: Page[] = [gate];
   const startedAt = Date.now();
+
+  // --- 逐 tab URL 组成（detail/mix 依赖 perf-s0 登录态：详情页对匿名是登录墙）---
+  const { urls, kinds } = await buildTabUrls(context, gate, listUrl, variant, tabCount, failures);
+  const kindCounts = kinds.reduce<Record<string, number>>((acc, k) => {
+    acc[k] = (acc[k] ?? 0) + 1;
+    return acc;
+  }, {});
+  log(`[C] 页面组成 ${variant}: ` + Object.entries(kindCounts).map(([k, n]) => `${k}×${n}`).join(' '));
 
   // --- 门卫 tab 增强标记（同 B 口径）---
   if (arm === 'enhanced') {
@@ -1886,7 +2007,7 @@ async function runScenarioC(
     const page = await context.newPage();
     sampler.trackPage(page);
     try {
-      await page.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
+      await page.goto(urls[i], { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
     } catch (error) {
       failures.push(`C: tab${i + 1} 加载失败: ${errMsg(error)}`);
     }
@@ -1894,16 +2015,55 @@ async function runScenarioC(
     if (i < tabCount - 1) await sleep(durations.cStaggerMs);
   }
 
-  // --- 其余 tab 等增强标记（并行，各自独立预算）---
+  // --- 其余 tab 等增强标记（并行，各自独立预算；就绪口径按页面类型区分）---
+  // 详情页增强无全页统一 DOM 标记：注入样式 id 为主口径 + 2.5s 兜底稳定窗；演员页无专用标记：稳定窗；
+  // 列表页保持 cycle-5 口径（.x-btn/.jdb-list-status-actions）。readyBy 写入 perTab 供诊断。
+  const readyBy: string[] = new Array<string>(pages.length).fill('skipped');
   if (arm === 'enhanced') {
     await Promise.all(
       pages.map(async (page, idx) => {
         if (idx === 0) return;
+        const kind = kinds[idx - 1] ?? 'list';
         try {
+          if (kind === 'detail') {
+            await page.waitForSelector('#jdb-related-lists-styles, #video-detail-preview-styles, .enhanced-translation', { timeout: 2_500 });
+            readyBy[idx] = 'marker';
+            return;
+          }
+          if (kind === 'actor') {
+            await sleep(2_000);
+            readyBy[idx] = 'settle';
+            return;
+          }
           await page.waitForSelector('.x-btn, .jdb-list-status-actions', { timeout: durations.enhancedMarkerMs });
+          readyBy[idx] = 'marker';
+          return;
         } catch {
-          failures.push(`C: tab${idx + 1} 增强标记未出现`);
+          // 落入下方按类型的失败处理
         }
+        if (kind === 'detail') {
+          // 登录态失效时详情页会 302→/login（或再跳回列表/搜索）：final URL 不在 /v/ 下即判失败
+          let finalPath = '';
+          try {
+            finalPath = new URL(page.url()).pathname;
+          } catch {
+            // ignore
+          }
+          if (!finalPath.startsWith('/v/')) {
+            readyBy[idx] = 'fail-redirected';
+            failures.push(`C: tab${idx + 1} 详情页未落在 /v/（final=${page.url().slice(0, 120)}）——登录态失效或站点结构变化；先运行 pnpm tsx scripts/loginPerfS0.ts 重建登录态后重跑`);
+            return;
+          }
+          readyBy[idx] = 'settle';
+          failures.push(`C: tab${idx + 1} 详情页增强标记未命中（降级稳定窗，readyBy=settle）`);
+          return;
+        }
+        if (kind === 'actor') {
+          readyBy[idx] = 'settle';
+          return;
+        }
+        readyBy[idx] = 'marker-timeout';
+        failures.push(`C: tab${idx + 1} 增强标记未出现`);
       }),
     );
   }
@@ -1939,6 +2099,7 @@ async function runScenarioC(
     const rec: PerTabRec = {
       tab: i + 1,
       url: '',
+      readyBy: readyBy[i] ?? 'skipped',
       closed: false,
       longTaskCount: 0,
       longTaskTotalMs: 0,
@@ -2010,7 +2171,7 @@ async function runScenarioC(
     await page.close().catch(() => {});
   }
   await sleep(durations.cooldownMs);
-  return { tInteractiveMs, perTab };
+  return { tInteractiveMs, perTab, variant };
 }
 
 // ---------------------------------------------------------------------------
@@ -2031,6 +2192,7 @@ interface RunReport {
     gitSha: string;
     profileDir: string;
     siteListUrl: string | null;
+    pagesVariant: CPagesVariant | null;
     featuresOff: string[];
     quick: boolean;
     seedGuard: GuardInfo | null;
@@ -2251,6 +2413,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
           args.listPage ?? SITE_LIST_URL,
           job.arm,
           args.tabs,
+          args.pages,
           sampler,
           durations,
           failures,
@@ -2259,6 +2422,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
         if (result.perTab.length > 0) perTab = result.perTab;
         writeFileSync(path.join(args.outDir, `${label}-per-tab.json`), `${JSON.stringify({
           scenario: 'C',
+          variant: args.pages,
           arm: job.arm,
           tabCount: args.tabs,
           tInteractiveMs: result.tInteractiveMs,
@@ -2296,6 +2460,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
         gitSha: gitShortSha(),
         profileDir: path.relative(CWD, PROFILE_DIR),
         siteListUrl: job.scenario === 'B' || job.scenario === 'C' ? (args.listPage ?? SITE_LIST_URL) : null,
+        pagesVariant: job.scenario === 'C' ? args.pages : null,
         featuresOff: args.featuresOff ?? [],
         quick: args.quick,
         seedGuard: guard,
@@ -2401,6 +2566,7 @@ function parseArgs(argv: string[]): Args {
     arm: 'enhanced',
     repeat: 1,
     tabs: 16,
+    pages: 'list',
     quick: false,
     matrix: false,
     noGuard: false,
@@ -2438,6 +2604,12 @@ function parseArgs(argv: string[]): Args {
         const n = Math.trunc(Number(next()) || 16);
         if (!(n >= 2 && n <= 40)) throw new Error(`--tabs 取值 2~40，收到 ${n}`);
         args.tabs = n;
+        break;
+      }
+      case '--pages': {
+        const value = next();
+        if (value !== 'list' && value !== 'detail' && value !== 'mix') throw new Error(`--pages 只接受 list|detail|mix，收到 ${value}`);
+        args.pages = value;
         break;
       }
       case '--quick':
