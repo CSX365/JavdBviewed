@@ -91,6 +91,7 @@ describe('GlobalTaskCenter scheduling', () => {
     (globalThis as any).chrome.storage.local.set = () => new Promise<void>((resolve) => {
       finishWrites.push(resolve);
     });
+    vi.useFakeTimers();
 
     try {
       const center = new GlobalTaskCenter();
@@ -115,19 +116,26 @@ describe('GlobalTaskCenter scheduling', () => {
       void responsePromise.then(() => { settled = true; });
       await Promise.resolve();
       expect(settled).toBe(false);
+
+      // S1-A (cycle-6): 写发生在 150ms 合并窗结束（flush）时，先推进定时器触发 flush 再放行写
+      await vi.advanceTimersByTimeAsync(150);
+      expect(finishWrites.length).toBe(1); // flush 已发起 storage.set
+      expect(settled).toBe(false);         // 响应仍未发出（等待写完成）
       finishWrites.splice(0).forEach((finishWrite) => finishWrite());
       await expect(responsePromise).resolves.toEqual({ granted: true });
     } finally {
+      vi.useRealTimers();
       (globalThis as any).chrome.storage.local.set = previousSet;
     }
   });
 
-  it('persists a granted source-page lease before the service worker can stop', () => {
+  it('persists a granted source-page lease within the 150ms coalesce window (before the SW can stop)', async () => {
     const previousSet = (globalThis as any).chrome.storage.local.set;
     const snapshots: Array<Record<string, unknown>> = [];
     (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
       snapshots.push(value);
     };
+    vi.useFakeTimers();
 
     try {
       const center = new GlobalTaskCenter();
@@ -139,6 +147,9 @@ describe('GlobalTaskCenter scheduling', () => {
       }));
 
       expect(center.requestLease('durable-source-lease')).toEqual({ granted: true });
+      expect(snapshots).toHaveLength(0); // S1-A (cycle-6): 合并窗内尚未落盘
+
+      await vi.advanceTimersByTimeAsync(150);
       const persistedTasks = snapshots
         .flatMap((snapshot) => ((snapshot['taskCenter:snapshot'] as any)?.tasks ?? []));
       expect(persistedTasks).toEqual(expect.arrayContaining([
@@ -148,6 +159,7 @@ describe('GlobalTaskCenter scheduling', () => {
         }),
       ]));
     } finally {
+      vi.useRealTimers();
       (globalThis as any).chrome.storage.local.set = previousSet;
     }
   });
@@ -1655,12 +1667,13 @@ describe('GlobalTaskCenter multi pageInstance pressure (P2 R3)', () => {
 });
 
 describe('GlobalTaskCenter snapshot persistence (B5 双写合并/进度合并)', () => {
-  it('lease 直写把 snapshot 与 dedupeIndex 合并为单次 storage.set', () => {
+  it('lease 授予把 snapshot 与 dedupeIndex 合并为单次 storage.set（150ms 合并窗后）', async () => {
     const previousSet = (globalThis as any).chrome.storage.local.set;
     const writes: Array<Record<string, unknown>> = [];
     (globalThis as any).chrome.storage.local.set = async (value: Record<string, unknown>) => {
       writes.push(value);
     };
+    vi.useFakeTimers();
 
     try {
       const center = new GlobalTaskCenter();
@@ -1672,6 +1685,9 @@ describe('GlobalTaskCenter snapshot persistence (B5 双写合并/进度合并)',
       }));
 
       expect(center.requestLease('b5-merge-write-task')).toEqual({ granted: true });
+      expect(writes).toHaveLength(0); // S1-A (cycle-6): 合并窗内尚未落盘
+
+      await vi.advanceTimersByTimeAsync(150);
 
       // 一次 grant 只允许产生一次 set，且必须同时携带两个 key
       expect(writes.length, '双写应合并为单次 storage.set').toBe(1);
@@ -1679,6 +1695,7 @@ describe('GlobalTaskCenter snapshot persistence (B5 双写合并/进度合并)',
       expect(Object.keys(writes[0])).toContain('taskCenter:dedupeIndex');
       expect(writes[0]['taskCenter:dedupeIndex']).toEqual({ 'b5-merge-write-key': 'b5-merge-write-task' });
     } finally {
+      vi.useRealTimers();
       (globalThis as any).chrome.storage.local.set = previousSet;
     }
   });

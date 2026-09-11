@@ -70,6 +70,14 @@ export class GlobalTaskCenter {
   private persistBurstWaiters: Array<() => void> = [];
   private lastPersistedContentJson: string | null = null;
   private lastGrantedLeasePersistence: Promise<void> = Promise.resolve();
+  // S1-A (cycle-6): 租约授予合并窗口 —— N 次并发授予的 N 次全量快照写合并为一次写，
+  // flush 完成后再 sendResponse（见 handleMessage REQUEST_LEASE）；SW 重启暴露窗口封顶于此值（原立即写为 0）
+  private readonly leaseGrantCoalesceMs = 150;
+  private leaseGrantFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private leaseGrantWaiters: Array<() => void> = [];
+  // S1-A: 提交序号 —— 用于识别 burst 窗口内的过期 pending（存在更新的提交时丢弃旧 pending，防快照回滚）
+  private persistCommitSeq = 0;
+  private persistBurstPendingSeq = 0;
 
   private getPhaseWeight(phase: string): number {
     if (phase === 'critical') return 4000;
@@ -188,6 +196,7 @@ export class GlobalTaskCenter {
     // I-4a: 冷启动合并窗口内 → 合并为窗口结束时一次写
     this.persistBurstPendingJson = contentJson;
     this.persistBurstPendingPayload = payload;
+    this.persistBurstPendingSeq = this.persistCommitSeq;
     if (this.persistBurstTimer === null) {
       const delay = Math.max(0, this.persistBurstAnchorMs + this.persistBurstWindowMs - Date.now());
       this.persistBurstTimer = setTimeout(() => this.flushPersistBurst(storage), delay);
@@ -226,10 +235,11 @@ export class GlobalTaskCenter {
   ): Promise<void> {
     // storage.set 失败原本即 fire-and-forget（catch 吞掉）；基线同步更新，避免跳过逻辑依赖微任务时序
     this.lastPersistedContentJson = contentJson;
+    this.persistCommitSeq += 1;
     return Promise.resolve(storage.set(payload)).catch(() => undefined).then(() => undefined);
   }
 
-  private flushPersistBurst(storage: { set: (items: Record<string, unknown>) => void | Promise<void> }): void {
+  private flushPersistBurst(storage: { set: (items: Record<string, unknown>) => void | Promise<void> } | null): void {
     this.persistBurstTimer = null;
     const pendingJson = this.persistBurstPendingJson;
     const pendingPayload = this.persistBurstPendingPayload;
@@ -240,11 +250,75 @@ export class GlobalTaskCenter {
     const done = (): void => {
       for (const resolve of waiters) resolve();
     };
-    if (pendingJson === null || pendingPayload === null || pendingJson === this.lastPersistedContentJson) {
+    if (
+      pendingJson === null
+      || pendingPayload === null
+      || pendingJson === this.lastPersistedContentJson
+      // S1-A: 已有更新的提交 → pending 过期（快照为全量覆盖，写回旧态会回滚新态）
+      || this.persistBurstPendingSeq < this.persistCommitSeq
+    ) {
+      done();
+      return;
+    }
+    if (!storage) {
       done();
       return;
     }
     this.commitPersistToStorage(storage, pendingJson, pendingPayload).then(done);
+  }
+
+  /**
+   * S1-A (cycle-6): 租约授予持久化 —— 150ms 合并窗口。
+   * 窗口内多次授予请求合并为一次 storage.set（内容在 flush 时构建，天然含窗口内全部状态变化）；
+   * waiter 只在 flush 完成后 resolve（调用方在 flush 后 sendResponse，避免响应先行、写入继续堆积）。
+   */
+  private persistLeaseGrant(): Promise<void> {
+    const storage = this.storageRef();
+    if (!storage) return Promise.resolve();
+    if (this.leaseGrantFlushTimer === null) {
+      this.leaseGrantFlushTimer = setTimeout(
+        () => this.flushLeaseGrantPersistence(storage),
+        this.leaseGrantCoalesceMs,
+      );
+    }
+    return new Promise<void>((resolve) => {
+      this.leaseGrantWaiters.push(resolve);
+    });
+  }
+
+  private flushLeaseGrantPersistence(storage: { set: (items: Record<string, unknown>) => void | Promise<void> } | null): void {
+    this.leaseGrantFlushTimer = null;
+    const waiters = this.leaseGrantWaiters;
+    this.leaseGrantWaiters = [];
+    const done = (): void => {
+      for (const resolve of waiters) resolve();
+    };
+    if (!storage) {
+      done();
+      return;
+    }
+    const { contentJson, payload } = this.buildPersistContent();
+    if (contentJson === this.lastPersistedContentJson) {
+      done();
+      return;
+    }
+    this.commitPersistToStorage(storage, contentJson, payload).then(done);
+  }
+
+  private storageRef(): { set: (items: Record<string, unknown>) => void | Promise<void> } | null {
+    return typeof chrome !== 'undefined' ? (chrome.storage?.local ?? null) : null;
+  }
+
+  /** S1-A (cycle-6): SW 急停前冲刷全部未提交持久化（150ms 租约窗 + 3s burst 窗），把重启暴露窗口压到 ~0 */
+  flushPendingPersistenceForSuspend(): void {
+    if (this.leaseGrantFlushTimer !== null) {
+      clearTimeout(this.leaseGrantFlushTimer);
+      void this.flushLeaseGrantPersistence(this.storageRef());
+    }
+    if (this.persistBurstTimer !== null) {
+      clearTimeout(this.persistBurstTimer);
+      void this.flushPersistBurst(this.storageRef());
+    }
   }
 
   /** Collapse bursty task completions into one full snapshot write. */
@@ -691,10 +765,11 @@ export class GlobalTaskCenter {
     task.runtime.startedAt = task.runtime.startedAt || Date.now();
     task.runtime.heartbeatTs = Date.now();
     this.store.setTask(taskId, task);
-    // A granted lease is the cross-page concurrency boundary. Persist it now
+    // A granted lease is the cross-page concurrency boundary. Persist it promptly
     // so an MV3 worker restart cannot admit a competing heavy task first.
-    // S1-B: immediate 豁免冷启动合并窗，保证并发边界写不被延迟
-    this.lastGrantedLeasePersistence = this.persistToStorage({ immediate: true });
+    // S1-A (cycle-6): 150ms 合并窗口替代立即写 —— 16 页冷启动的突发授予合并为一次写，
+    // sendResponse 仍在 flush 之后（见 handleMessage）；重启暴露窗口封顶 150ms 且有急停落盘兜底
+    this.lastGrantedLeasePersistence = this.persistLeaseGrant();
     return { granted: true };
   }
 
@@ -1075,3 +1150,12 @@ export class GlobalTaskCenter {
 }
 
 export const globalTaskCenter = new GlobalTaskCenter();
+
+// S1-A (cycle-6): SW 急停前冲刷未提交持久化（150ms 租约授予窗 + 3s burst 窗）
+try {
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onSuspend) {
+    chrome.runtime.onSuspend.addListener(() => {
+      globalTaskCenter.flushPendingPersistenceForSuspend();
+    });
+  }
+} catch {}
