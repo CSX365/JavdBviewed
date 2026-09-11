@@ -7,6 +7,7 @@
  * - orchestratorTaskDetails 拆分为 hot（最新 ≤300 条，沿用旧键名，遗留数据天然在 hot）
  *   与 orchestratorTaskDetailsArchive（更旧数据，hot+archive 全局 cap 2000）
  * - saveTaskDetail 只入内存 buffer，resolve 于「已缓冲」而非「已落盘」
+ * - S1-B (cycle-6)：handleSaveOrchestratorMetrics 同样改为 buffer + 1.5s 防抖合并写
  *   （content 侧 fire-and-forget，语义变化：save 不再阻塞等待 storage 写）
  * - 1.5s 防抖合并写：burst 只落盘 1 次 hot（≤300 条 ≈146KB），替代旧的每次全量写
  * - archive 累积满 100 条（或全局 cap 触发裁剪）才持久化，archive 前缀不可变
@@ -26,6 +27,14 @@ const TASK_DETAILS_GLOBAL_CAP = 2000;
 const TASK_DETAILS_ARCHIVE_CHUNK = 100;
 /** 防抖合并写周期（ms） */
 const TASK_DETAILS_FLUSH_DEBOUNCE_MS = 1500;
+/** S1-B (cycle-6): orchestratorMetrics 内存 buffer + 1.5s 防抖合并写（原每次保存全量读-改-写，
+ *  16 页 burst = 16+ 次全量读 + 16+ 次全量写；改后 burst 只落盘 1 次） */
+const METRICS_KEY = 'orchestratorMetrics';
+const METRICS_CAP = 100;
+const METRICS_FLUSH_DEBOUNCE_MS = 1500;
+let pendingMetrics: any[] = [];
+let metricsFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let metricsFlushInflight: Promise<void> | null = null;
 
 let taskDetailSaveQueue: Promise<void> = Promise.resolve();
 /** 已归一化、待落盘的新条目（时间升序，最旧在前） */
@@ -36,29 +45,71 @@ let taskDetailsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let taskDetailsFlushInflight: Promise<void> | null = null;
 
 export async function handleSaveOrchestratorMetrics(metrics: any): Promise<void> {
-  console.log('[Background] Saving orchestrator metrics:', metrics);
-  try {
-    if (!metrics) {
-      console.warn('[Background] No metrics provided, skipping save');
-      return;
-    }
-
-    const existingData = await getValue<any[]>('orchestratorMetrics', []);
-    console.log('[Background] Existing metrics count:', existingData.length);
-
-    existingData.push({
-      ...metrics,
-      savedAt: Date.now(),
-    });
-
-    const trimmedData = existingData.slice(-100);
-    await setValue('orchestratorMetrics', trimmedData);
-
-    console.log('[Background] Orchestrator metrics saved successfully, total records:', trimmedData.length);
-  } catch (error) {
-    console.error('[Background] Failed to save orchestrator metrics:', error);
-    throw error;
+  if (!metrics) {
+    console.warn('[Background] No metrics provided, skipping save');
+    return;
   }
+  // S1-B (cycle-6): 只入内存 buffer，不落盘（content 侧本就 fire-and-forget，响应语义不变）
+  pendingMetrics.push({ ...metrics, savedAt: Date.now() });
+  // 内存上限：极端 burst 丢弃最旧缓冲，保证内存有界（磁盘 cap 不变）
+  if (pendingMetrics.length > METRICS_CAP) {
+    pendingMetrics = pendingMetrics.slice(-METRICS_CAP);
+  }
+  scheduleMetricsFlush();
+  console.log('[Background] Orchestrator metrics buffered, pending:', pendingMetrics.length);
+}
+
+function scheduleMetricsFlush(): void {
+  if (metricsFlushTimer) {
+    clearTimeout(metricsFlushTimer);
+    metricsFlushTimer = null;
+  }
+  metricsFlushTimer = setTimeout(() => {
+    metricsFlushTimer = null;
+    void flushMetrics('debounce').catch((error) => {
+      console.error('[Background] Failed to flush orchestrator metrics:', error);
+    });
+  }, METRICS_FLUSH_DEBOUNCE_MS);
+}
+
+/** 合并读取 stored + buffer 的 metrics（buffer 恒新于 stored，读语义与旧单数组一致） */
+async function readMetricsMerged(): Promise<any[]> {
+  const storedRaw = await getValue<any[]>(METRICS_KEY, []);
+  const stored = Array.isArray(storedRaw) ? storedRaw : [];
+  return [...stored, ...pendingMetrics];
+}
+
+/** 落盘 metrics buffer（防抖 / 急停 / 手动） */
+export function flushMetrics(reason: string = 'manual'): Promise<void> {
+  if (metricsFlushInflight) return metricsFlushInflight;
+  const run = (async () => {
+    if (metricsFlushTimer) {
+      clearTimeout(metricsFlushTimer);
+      metricsFlushTimer = null;
+    }
+    const batch = pendingMetrics;
+    pendingMetrics = [];
+    if (batch.length === 0) return;
+    try {
+      const storedRaw = await getValue<any[]>(METRICS_KEY, []);
+      const stored = Array.isArray(storedRaw) ? storedRaw : [];
+      const merged = [...stored, ...batch].slice(-METRICS_CAP);
+      await setValue(METRICS_KEY, merged);
+      console.log('[Background] Orchestrator metrics flushed', { reason, total: merged.length });
+    } catch (error) {
+      console.error('[Background] Failed to flush orchestrator metrics:', error, { reason });
+      // 回滚未落盘 batch 并重排 flush，避免指标静默丢失
+      pendingMetrics = [...batch, ...pendingMetrics];
+      scheduleMetricsFlush();
+      throw error;
+    }
+  })();
+  metricsFlushInflight = run;
+  // 派生链吞掉 rejection（错误已在内部记录），仅用于复位 inflight 标记
+  run.catch(() => {}).finally(() => {
+    if (metricsFlushInflight === run) metricsFlushInflight = null;
+  });
+  return run;
 }
 
 /** 合并读取 hot + archive（archive 恒旧于 hot，读语义与旧单数组一致） */
@@ -142,7 +193,7 @@ export async function handleGetAggregatedMetrics(): Promise<any> {
     };
 
     const treeMetrics = deriveFromDetails();
-    const metricsData = await getValue<any[]>('orchestratorMetrics', []);
+    const metricsData = await readMetricsMerged();
     console.log('[Background] Retrieved metrics records:', metricsData.length);
 
     if (metricsData.length === 0) {
@@ -418,9 +469,18 @@ export async function handleClearTaskDetails(): Promise<any> {
     if (taskDetailsFlushInflight) {
       await taskDetailsFlushInflight.catch(() => {});
     }
+    // S1-B (cycle-6): 同步清 metrics 内存 buffer，并在在途 flush 落盘后写空数组，防止复活已清除数据
+    if (metricsFlushTimer) {
+      clearTimeout(metricsFlushTimer);
+      metricsFlushTimer = null;
+    }
+    pendingMetrics = [];
+    if (metricsFlushInflight) {
+      await metricsFlushInflight.catch(() => {});
+    }
     await setValue(TASK_DETAILS_HOT_KEY, []);
     await setValue(TASK_DETAILS_ARCHIVE_KEY, []);
-    await setValue('orchestratorMetrics', []);
+    await setValue(METRICS_KEY, []);
     const clearedGlobalState = globalTaskCenter.clearAll();
     try {
       const tabs = await chrome.tabs.query({});
@@ -458,6 +518,7 @@ try {
   if (typeof chrome !== 'undefined' && chrome.runtime?.onSuspend) {
     chrome.runtime.onSuspend.addListener(() => {
       void flushTaskDetails('suspend').catch(() => {});
+      void flushMetrics('suspend').catch(() => {});
     });
   }
 } catch {}

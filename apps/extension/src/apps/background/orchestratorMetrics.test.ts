@@ -271,4 +271,89 @@ describe('orchestratorMetrics S1-1 写路径治理', () => {
     const page2 = await mod.handleGetTaskDetails({ page: 1, pageSize: 500 });
     expect(page2.total).toBe(405);
   });
+
+  describe('S1-B (cycle-6)：orchestratorMetrics 合并写', () => {
+    function metricsWrites(): Array<unknown> {
+      return setLog.filter((w) => w.key === 'orchestratorMetrics').map((w) => w.value);
+    }
+
+    function makeMetric(id: number): Record<string, unknown> {
+      return {
+        totalTasks: 1,
+        completedTasks: 1,
+        failedTasks: 0,
+        timeoutTasks: 0,
+        totalDuration: 100,
+        maxDuration: 50,
+        minDuration: 10,
+        maxDurationTask: `m${id}`,
+      };
+    }
+
+    it('burst saveMetrics 合并为一次落盘，读方在 flush 前即可见 buffer', async () => {
+      const mod = await loadModule();
+      for (let i = 1; i <= 5; i += 1) {
+        await mod.handleSaveOrchestratorMetrics(makeMetric(i));
+      }
+      // 防抖窗口内不落盘（原实现每次保存即全量读+写）
+      expect(metricsWrites()).toHaveLength(0);
+
+      // 读方合并 stored + buffer（buffer 恒新于 stored）
+      const agg1 = await mod.handleGetAggregatedMetrics();
+      expect(agg1.recordCount).toBe(5);
+      expect(agg1.totalTasks).toBe(5);
+
+      await settle(1500);
+      expect(metricsWrites()).toHaveLength(1);
+      expect(metricsWrites()[0] as unknown[]).toHaveLength(5);
+
+      const agg2 = await mod.handleGetAggregatedMetrics();
+      expect(agg2.recordCount).toBe(5);
+      expect(agg2.totalTasks).toBe(5);
+    });
+
+    it('磁盘 cap 保持 100 条（stored 与 buffer 合并后截断最新 100）', async () => {
+      const mod = await loadModule();
+      stored['orchestratorMetrics'] = Array.from({ length: 80 }, (_, i) => ({
+        totalTasks: 1,
+        completedTasks: 1,
+        savedAt: i,
+      }));
+      for (let i = 1; i <= 50; i += 1) {
+        await mod.handleSaveOrchestratorMetrics(makeMetric(i));
+      }
+      await settle(1500);
+
+      const writes = metricsWrites() as Array<Record<string, unknown>[]>;
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toHaveLength(100);
+      expect(writes[0][writes[0].length - 1].maxDurationTask).toBe('m50');
+    });
+
+    it('onSuspend 冲刷 metrics buffer（SW 急停前落盘）', async () => {
+      const mod = await loadModule();
+      await mod.handleSaveOrchestratorMetrics(makeMetric(1));
+      expect(metricsWrites()).toHaveLength(0);
+
+      expect(suspendListener).not.toBeNull();
+      suspendListener!();
+      await settle(0);
+
+      const writes = metricsWrites() as Array<Record<string, unknown>[]>;
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toHaveLength(1);
+    });
+
+    it('clearTaskDetails 清 metrics buffer，在途 flush 之后写空数组不复活', async () => {
+      const mod = await loadModule();
+      await mod.handleSaveOrchestratorMetrics(makeMetric(1));
+      await mod.handleClearTaskDetails();
+      await settle(1500);
+
+      const writes = metricsWrites() as Array<unknown>;
+      expect(writes[writes.length - 1]).toEqual([]);
+      const agg = await mod.handleGetAggregatedMetrics();
+      expect(agg.recordCount).toBe(0);
+    });
+  });
 });
