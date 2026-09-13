@@ -1321,9 +1321,13 @@ test.describe('settings React pages in Chromium', () => {
         await mainToggle.locator('xpath=ancestor::label[1]').click();
       }
       // 主开关与数据行为分属不同卡片：状态选择器位于「状态标记/数据行为」
+      // 卡片内容仅在 hover/focus/reveal 时展开，断言 visibility 前必须先展开目标卡片
+      const statusCard = page.locator('[data-enhancement-feature="状态标记/数据行为"]');
+      await statusCard.hover();
       const starSelect = page.locator('#veAutoMarkWatchedStars');
       await expect(mainToggle).toBeChecked();
       await expect.poll(async () => starSelect.count()).toBe(1);
+      await expect(statusCard).toHaveAttribute('data-expanded', '1');
       await expect(starSelect).toBeVisible();
       await expect(starSelect.locator('option')).toHaveCount(6);
       await expect(starSelect.locator('option').first()).toHaveAttribute('value', '0');

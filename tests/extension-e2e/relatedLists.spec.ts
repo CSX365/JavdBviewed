@@ -62,10 +62,18 @@ test.describe('related lists on JavDB new video-detail DOM (#48)', () => {
   test.setTimeout(180_000);
 
   test('new-DOM tab is neutralized and click opens in-page panel without navigation', async ({}, testInfo) => {
-    // 网络预检（不可达则 skip，避免环境抖动造成误报）
+    // 网络预检（不可达则 skip，避免环境抖动造成误报；瞬时抖动时重试 1 次）
     try {
-      const resp = await fetch(E2E_VIDEO_URL, { signal: AbortSignal.timeout(20_000) });
-      if (!resp.ok) test.skip(true, `影片页不可达 (status=${resp.status})`);
+      let resp: Response | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          resp = await fetch(E2E_VIDEO_URL, { signal: AbortSignal.timeout(20_000) });
+          break;
+        } catch {
+          if (attempt === 1) throw new Error('影片页 fetch 重试失败');
+        }
+      }
+      if (resp && !resp.ok) test.skip(true, `影片页不可达 (status=${resp.status})`);
     } catch (error) {
       test.skip(true, `网络不可用，跳过真机检查: ${error instanceof Error ? error.message : String(error)}`);
     }
