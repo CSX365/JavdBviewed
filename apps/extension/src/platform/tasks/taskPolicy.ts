@@ -52,11 +52,16 @@ export const TASK_LEASE_GROUP_LIMITS: Record<string, number> = {
   'source-page-heavy': 1,
 };
 
+/** 源页同步链主任务（恒属 source-page-heavy 组，phase 为 critical/deferred） */
+export function isSourcePageSyncLabel(label: string): boolean {
+  return label === 'videoStatus:initialSync' || label === 'videoStatus:fullRefresh';
+}
+
 export function resolveTaskLeaseGroup(
   label: string,
   visibilityPolicy?: GlobalTaskVisibilityPolicy,
 ): string | null {
-  if (label === 'videoStatus:initialSync' || label === 'videoStatus:fullRefresh') {
+  if (isSourcePageSyncLabel(label)) {
     return 'source-page-heavy';
   }
   if (visibilityPolicy === 'background_allowed') return null;

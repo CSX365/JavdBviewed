@@ -4,6 +4,8 @@ export const TASK_CENTER_MESSAGE = {
   REGISTER: 'task-center:register',
   REGISTER_BATCH: 'task-center:register-batch',
   REQUEST_LEASE: 'task-center:request-lease',
+  // S2-2 (cycle-7): 事件驱动的租约唤醒 —— 排队状态变化时推送给等待中的页面，替代纯定频轮询
+  LEASE_PROMPT: 'task-center:lease-prompt',
   HEARTBEAT: 'task-center:heartbeat',
   PROGRESS: 'task-center:progress',
   PAUSE: 'task-center:pause',
@@ -32,6 +34,12 @@ export interface RegisterTaskBatchMessage {
 export interface RequestLeaseMessage {
   type: typeof TASK_CENTER_MESSAGE.REQUEST_LEASE;
   payload: { taskId: string };
+}
+
+/** S2-2 (cycle-7): 租约唤醒消息 —— 仅用于提示等待中的页面「尽快再试一次」，不携带租约判定 */
+export interface LeasePromptMessage {
+  type: typeof TASK_CENTER_MESSAGE.LEASE_PROMPT;
+  payload: { reason: string };
 }
 
 export interface DeferTaskMessage {

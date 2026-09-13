@@ -25,7 +25,25 @@ export function installTaskVisibilityReporter(getActiveTaskIds?: () => string[])
     } catch {}
   };
 
+  // RC4 (cycle-7): tab 关闭 / 进入 bfcache 时主动上报 hidden —— 否则 SW 可见集合只增不减，
+  // 已关闭页面仍以「假 visible」参与全局 cap 分摊（C 场景 16 页同见 visible 的结构性根因之一）
+  const onPageHide = () => {
+    try {
+      chrome.runtime.sendMessage({
+        type: TASK_CENTER_MESSAGE.VISIBILITY,
+        payload: {
+          visible: false,
+          pageUrl: window.location.href,
+        },
+      });
+    } catch {}
+  };
+
   document.addEventListener('visibilitychange', report);
+  window.addEventListener('pagehide', onPageHide);
   report();
-  return () => document.removeEventListener('visibilitychange', report);
+  return () => {
+    document.removeEventListener('visibilitychange', report);
+    window.removeEventListener('pagehide', onPageHide);
+  };
 }

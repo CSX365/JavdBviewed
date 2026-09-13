@@ -153,6 +153,25 @@ export function isRetryBudgetExhausted(taskId: string): boolean {
   return (taskRetryBudget.get(taskId) || 0) >= MAX_GLOBAL_RETRIES;
 }
 
+// S2-2 (cycle-7): 事件驱动的租约唤醒 —— background 在排队状态变化时推送 LEASE_PROMPT（task-center:lease-prompt），
+// 等待中的页面立即重试租约，替代纯定频轮询（兜底间隔已由 500ms 放宽到 2000ms）
+const leasePromptWaiters = new Set<() => void>();
+let leasePromptListenerInstalled = false;
+
+function ensureLeasePromptListener(): void {
+  if (leasePromptListenerInstalled) return;
+  leasePromptListenerInstalled = true;
+  try {
+    chrome.runtime.onMessage.addListener((message: unknown) => {
+      if (message && (message as { type?: unknown }).type === TASK_CENTER_MESSAGE.LEASE_PROMPT) {
+        for (const wake of Array.from(leasePromptWaiters)) wake();
+      }
+    });
+  } catch {
+    // 非扩展环境（单测等）：退回定频轮询兜底
+  }
+}
+
 const activeManagedTaskIds = new Set<string>();
 
 export function getActiveManagedTaskIds(): string[] {
@@ -170,29 +189,48 @@ export function untrackActiveManagedTask(taskId: string): void {
 export async function waitForTaskLease(
   taskId: string,
   timeoutMs: number,
-  intervalMs: number = 500,
+  // S2-2: 兜底轮询间隔 500ms → 2000ms —— 常态由 LEASE_PROMPT 事件唤醒，轮询只兜底丢消息场景
+  intervalMs: number = 2000,
 ): Promise<{ granted: boolean; waitReason?: string }> {
+  ensureLeasePromptListener();
   const start = Date.now();
   const executionTimeoutMs = Math.max(0, timeoutMs);
   const capacityWaitTimeoutMs = Math.max(executionTimeoutMs, 120_000);
   let waitTimeoutMs = executionTimeoutMs;
   let lastWaitReason: string | undefined;
   while (Date.now() - start < waitTimeoutMs) {
-    const lease = await requestTaskLease(taskId);
-    if (lease.granted) {
-      return lease;
+    // D (cycle-7): 先注册唤醒 waiter，再发租约请求 —— 闭合「请求在途期间 SW 释放槽位并发
+    // prompt，但 waiter 尚未注册」的确定性丢 prompt 窗口（旧实现会让页面白等一个完整兜底间隔）
+    let wakeFn: () => void = () => {};
+    const wake = new Promise<void>((resolve) => {
+      wakeFn = () => resolve();
+      leasePromptWaiters.add(wakeFn);
+    });
+    let sleepTimer: ReturnType<typeof setTimeout> | undefined;
+    const sleep = new Promise<void>((resolve) => {
+      sleepTimer = setTimeout(resolve, intervalMs);
+    });
+    try {
+      const lease = await requestTaskLease(taskId);
+      if (lease.granted) {
+        return lease;
+      }
+      lastWaitReason = lease.waitReason || lastWaitReason;
+      if (lastWaitReason && isTerminalTaskWaitReason(lastWaitReason)) {
+        return { granted: false, waitReason: lastWaitReason };
+      }
+      if (lastWaitReason === 'tab-hidden') {
+        return { granted: false, waitReason: lastWaitReason };
+      }
+      if (lastWaitReason && isTaskLeaseAvailabilityWaitReason(lastWaitReason)) {
+        waitTimeoutMs = capacityWaitTimeoutMs;
+      }
+      // S2-2: 等待窗 —— 事件（LEASE_PROMPT）先醒，否则兜底间隔后重试
+      await Promise.race([wake, sleep]);
+    } finally {
+      clearTimeout(sleepTimer);
+      leasePromptWaiters.delete(wakeFn);
     }
-    lastWaitReason = lease.waitReason || lastWaitReason;
-    if (lastWaitReason && isTerminalTaskWaitReason(lastWaitReason)) {
-      return { granted: false, waitReason: lastWaitReason };
-    }
-    if (lastWaitReason === 'tab-hidden') {
-      return { granted: false, waitReason: lastWaitReason };
-    }
-    if (lastWaitReason && isTaskLeaseAvailabilityWaitReason(lastWaitReason)) {
-      waitTimeoutMs = capacityWaitTimeoutMs;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return { granted: false, waitReason: lastWaitReason || 'lease-timeout' };
 }

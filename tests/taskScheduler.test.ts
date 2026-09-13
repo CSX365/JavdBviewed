@@ -1312,7 +1312,13 @@ describe('GlobalTaskCenter multi pageInstance pressure (P2 R3)', () => {
 
     center.completeTask('source-heavy-status');
 
-    expect(center.requestLease('source-heavy-actors')).toEqual({ granted: true });
+    // F2 (cycle-7) 相位序：initialSync 完成后，排队的 fullRefresh 仍属源页同步链，
+    // 后台增强任务（actors）在同步链跑完前不得重入 source-page-heavy 槽
+    expect(center.requestLease('source-heavy-actors')).toEqual({
+      granted: false,
+      waitReason: 'source-page-heavy-budget',
+    });
+    expect(center.requestLease('source-light-refresh')).toEqual({ granted: true });
   });
 
   it('caps visible leases across independent buckets', () => {

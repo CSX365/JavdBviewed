@@ -16,6 +16,7 @@ import {
   TASK_LEASE_GROUP_LIMITS,
   TASK_PAGE_LEASE_LIMITS,
   TASK_SMART_BACKGROUND_PREWARM_LIMITS,
+  isSourcePageSyncLabel,
   resolveTaskBucket,
   resolveTaskLeaseGroup,
 } from './taskPolicy';
@@ -81,6 +82,16 @@ export class GlobalTaskCenter {
   private readonly leaseGrantCoalesceMs = 150;
   private leaseGrantFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private leaseGrantWaiters: Array<() => void> = [];
+  // S2-2 (cycle-7): 事件驱动的租约唤醒 —— 替代前台页 500ms 定频 request-lease 轮询（S2-1 归因：占 SW 消息 55~62%）
+  private leasePromptLastSentAt = new Map<number, number>();
+  private readonly leasePromptCoalesceMs = 500;
+  // S2-2 (cycle-7 r3 定案): 500ms 每 tab 合并窗吞掉同步链主任务(fullRefresh)完成时的槽位释放 prompt
+  // (r3 取证: 槽位空转 2.6s, 尾部交接延迟 1.8~2.6s), 同步链释放路径改走 100ms 微窗豁免;
+  // 一次 run 全程同步链释放仅 ~15 次量级, 100ms 限流足以防突发刷屏
+  private readonly leasePromptBypassCoalesceMs = 100;
+  private static readonly leasePromptStaleMs = 5 * 60 * 1000;
+  /** S2-2: 唤醒发送函数（测试可注入；默认 chrome.tabs.sendMessage，已关闭的 tab 吞错，页面侧轮询兜底） */
+  sendTabPrompt?: (tabId: number, message: { type: string; payload: Record<string, unknown> }) => void;
   // S1-A: 提交序号 —— 用于识别 burst 窗口内的过期 pending（存在更新的提交时丢弃旧 pending，防快照回滚）
   private persistCommitSeq = 0;
   private persistBurstPendingSeq = 0;
@@ -496,6 +507,19 @@ export class GlobalTaskCenter {
     }).length;
   }
 
+  /**
+   * F2 (cycle-7): 是否存在排队中的源页同步链任务（videoStatus:initialSync/fullRefresh）。
+   * 排除 tab-hidden 暂缓态（该页不参与前台调度，预热任务同为后台节流，无冲突）。
+   */
+  private hasQueuedSourcePageSyncTask(): boolean {
+    for (const record of this.store.listTasks()) {
+      if (record.runtime.status !== 'queued') continue;
+      if (record.runtime.waitReason === 'tab-hidden') continue;
+      if (isSourcePageSyncLabel(record.descriptor.label)) return true;
+    }
+    return false;
+  }
+
   private cleanupStaleTasks(now = Date.now()): void {
     for (const record of this.store.listTasks()) {
       const { descriptor, runtime } = record;
@@ -674,6 +698,68 @@ export class GlobalTaskCenter {
     return { ok: true, taskId: descriptor.taskId, tabId, reused: false, status: 'registered' };
   }
 
+  /**
+   * S2-2 (cycle-7): 排队状态可能变化时唤醒等待中的页面。
+   * - 仅对存在 queued 任务的 tab 发送；每 tab 在合并窗（500ms）内最多一次；
+   * - 唤醒只是提示「尽快再试一次」，租约判定仍以页面侧 request-lease 为准（轮询为兜底）；
+   * - 发送失败（tab 已关闭等）静默吞掉，不影响状态机。
+   */
+  private notifyLeaseWaiters(reason: string, opts?: { bypassCoalesce?: boolean }): void {
+    // F4 (cycle-7): prompt 雷群公平化 —— 按「该 tab 排队任务最高相位、最老排队任务 createdAt」排序。
+    // 槽位释放后优先唤醒持最紧急排队任务的 tab，后开 tab（持 critical 同步任务）不再
+    // 系统性输给先开 tab（持预热任务）—— 旧实现按注册顺序遍历，雷群中先开 tab 的请求总是先被处理
+    const tabQueueKey = new Map<number, { topPhase: number; oldest: number }>();
+    for (const record of this.store.listTasks()) {
+      if (record?.runtime?.status !== 'queued') continue;
+      const tabId = record?.descriptor?.tabId;
+      if (typeof tabId !== 'number') continue;
+      const phaseWeight = this.getPhaseWeight(record?.descriptor?.phase);
+      const createdAt = record?.descriptor?.createdAt || 0;
+      const entry = tabQueueKey.get(tabId);
+      if (!entry) {
+        tabQueueKey.set(tabId, { topPhase: phaseWeight, oldest: createdAt });
+      } else {
+        entry.topPhase = Math.max(entry.topPhase, phaseWeight);
+        entry.oldest = Math.min(entry.oldest, createdAt);
+      }
+    }
+    const targetTabs = Array.from(tabQueueKey.entries())
+      .sort((a, b) => (b[1].topPhase - a[1].topPhase) || (a[1].oldest - b[1].oldest))
+      .map(([tabId]) => tabId);
+    if (targetTabs.length === 0) return;
+    const coalesceMs = opts?.bypassCoalesce ? this.leasePromptBypassCoalesceMs : this.leasePromptCoalesceMs;
+    const now = Date.now();
+    for (const tabId of targetTabs) {
+      const last = this.leasePromptLastSentAt.get(tabId);
+      if (last !== undefined && now - last < coalesceMs) continue;
+      if (last !== undefined && now - last > GlobalTaskCenter.leasePromptStaleMs) {
+        this.leasePromptLastSentAt.delete(tabId);
+      }
+      this.leasePromptLastSentAt.set(tabId, now);
+      try {
+        (this.sendTabPrompt ?? this.sendLeasePromptToTab)(tabId, {
+          type: TASK_CENTER_MESSAGE.LEASE_PROMPT,
+          payload: { reason },
+        });
+      } catch {
+        // tab 可能已关闭；页面侧轮询兜底，不影响任务状态
+      }
+    }
+  }
+
+  private sendLeasePromptToTab = (tabId: number, message: { type: string; payload: Record<string, unknown> }): void => {
+    try {
+      const send = (chrome as { tabs?: { sendMessage?: (t: number, m: unknown) => Promise<unknown> | undefined } })?.tabs?.sendMessage;
+      if (typeof send !== 'function') return;
+      const result = send.call((chrome as { tabs?: unknown }).tabs, tabId, message);
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        (result as Promise<unknown>).catch(() => {});
+      }
+    } catch {
+      // tab 可能已关闭
+    }
+  };
+
   requestLease(taskId: string): LeaseResponse {
     this.cleanupStaleTasks();
     const task = this.store.getTask(taskId);
@@ -794,7 +880,18 @@ export class GlobalTaskCenter {
       task.descriptor.visibilityPolicy,
     );
     const leaseGroupLimit = leaseGroup ? TASK_LEASE_GROUP_LIMITS[leaseGroup] : undefined;
-    if (leaseGroup && leaseGroupLimit !== undefined && this.getActiveLeaseGroupCount(leaseGroup) >= leaseGroupLimit) {
+    // F2 (cycle-7): 组预算相位序 —— 源页同步链（initialSync→fullRefresh）在排队时，
+    // 后台增强预热任务（videoFavoriteRating:init/actorMarks:page/insights:collector）
+    // 即使组槽空闲也不得重入 source-page-heavy 槽（S2-2 长尾根因：预热任务在 prompt 雷群中
+    // 逐个重入槽位，critical initialSync 被持续以 source-page-heavy-budget 弹回）
+    const blockedBySourceSyncQueue = leaseGroup === 'source-page-heavy'
+      && !isSourcePageSyncLabel(task.descriptor.label)
+      && this.hasQueuedSourcePageSyncTask();
+    if (
+      leaseGroup
+      && leaseGroupLimit !== undefined
+      && (this.getActiveLeaseGroupCount(leaseGroup) >= leaseGroupLimit || blockedBySourceSyncQueue)
+    ) {
       task.runtime.status = 'queued';
       task.runtime.waitReason = `${leaseGroup}-budget`;
       this.store.setTask(taskId, task);
@@ -821,6 +918,7 @@ export class GlobalTaskCenter {
       task.runtime.waitReason = reason;
       task.runtime.pauseCount += 1;
       this.store.setTask(taskId, task);
+      this.notifyLeaseWaiters('task-paused', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
     }
     return { ok: true };
   }
@@ -833,6 +931,7 @@ export class GlobalTaskCenter {
       task.runtime.waitReason = undefined;
       task.runtime.resumeCount += 1;
       this.store.setTask(taskId, task);
+      this.notifyLeaseWaiters('task-resumed');
     }
     return { ok: true };
   }
@@ -858,6 +957,8 @@ export class GlobalTaskCenter {
       this.store.setTask(taskId, task);
       // P1 FIX: 任务完成时同步到全局已完成标签集合（跨页面依赖）
       this.markTaskLabelCompleted(task.descriptor.label);
+      // S2-2: 桶容量释放，唤醒仍在排队的页面
+      this.notifyLeaseWaiters('task-completed', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
     }
     return { ok: true };
   }
@@ -899,6 +1000,7 @@ export class GlobalTaskCenter {
       task.runtime.heartbeatTs = undefined;
       task.runtime.lastProgressAt = Date.now();
       this.store.setTask(taskId, task);
+      this.notifyLeaseWaiters('task-retryable', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
       return {
         ok: true,
         retryable: true,
@@ -913,6 +1015,7 @@ export class GlobalTaskCenter {
     task.runtime.waitReason = 'retry-limit-exhausted';
     task.runtime.endedAt = Date.now();
     this.store.setTask(taskId, task);
+    this.notifyLeaseWaiters('task-failed', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
     return {
       ok: true,
       retryable: false,
@@ -936,6 +1039,7 @@ export class GlobalTaskCenter {
       task.runtime.heartbeatTs = undefined;
       task.runtime.lastProgressAt = Date.now();
       this.store.setTask(taskId, task);
+      this.notifyLeaseWaiters('task-deferred', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
     }
     return { ok: true, status: task.runtime.status, waitReason: task.runtime.waitReason };
   }
@@ -948,6 +1052,7 @@ export class GlobalTaskCenter {
       task.runtime.waitReason = reason || 'manual-cancel';
       task.runtime.endedAt = Date.now();
       this.store.setTask(taskId, task);
+      this.notifyLeaseWaiters('task-canceled', { bypassCoalesce: isSourcePageSyncLabel(task.descriptor.label) });
     }
     return { ok: true };
   }
@@ -955,36 +1060,44 @@ export class GlobalTaskCenter {
   cancelTasksByPageInstance(pageInstanceId: string, reason: string): { ok: true; canceled: number } {
     this.cleanupStaleTasks();
     let canceled = 0;
+    let syncLabelReleased = false;
     for (const record of this.store.listTasks()) {
       if (record?.descriptor?.pageInstanceId !== pageInstanceId) continue;
       if (['done', 'error', 'canceled'].includes(record.runtime.status)) continue;
+      if (isSourcePageSyncLabel(record.descriptor.label)) syncLabelReleased = true;
       record.runtime.status = 'canceled';
       record.runtime.waitReason = reason || 'page-closed-by-user';
       record.runtime.endedAt = Date.now();
       this.store.setTask(record.descriptor.taskId, record);
       canceled += 1;
     }
+    if (canceled > 0) this.notifyLeaseWaiters('task-canceled', { bypassCoalesce: syncLabelReleased });
     return { ok: true, canceled };
   }
 
   cancelTasksByTabId(tabId: number, reason: string): { ok: true; canceled: number } {
     this.cleanupStaleTasks();
     let canceled = 0;
+    let syncLabelReleased = false;
     for (const record of this.store.listTasks()) {
       if (record?.descriptor?.tabId !== tabId) continue;
       if (['done', 'error', 'canceled'].includes(record.runtime.status)) continue;
+      if (isSourcePageSyncLabel(record.descriptor.label)) syncLabelReleased = true;
       record.runtime.status = 'canceled';
       record.runtime.waitReason = reason || 'page-closed-by-user';
       record.runtime.endedAt = Date.now();
       this.store.setTask(record.descriptor.taskId, record);
       canceled += 1;
     }
+    if (canceled > 0) this.notifyLeaseWaiters('task-canceled', { bypassCoalesce: syncLabelReleased });
     return { ok: true, canceled };
   }
 
   updateVisibility(tabId: number, visible: boolean): { ok: true } {
     this.cleanupStaleTasks();
     this.store.setVisibility(tabId, visible);
+    // S2-2: 双向唤醒 —— 变可见：该页排队任务重新有资格；变隐藏：该页任务可能让出槽位
+    this.notifyLeaseWaiters(visible ? 'tab-visible' : 'tab-hidden');
     return { ok: true };
   }
 
@@ -1027,7 +1140,9 @@ export class GlobalTaskCenter {
       this.store.setTask(record.descriptor.taskId, record);
       canceled += 1;
     }
-    this.persistToStorage();
+    // S2-2: stop-all 会把排队任务自身一并取消，不存在「仍排队等待」的目标；
+    // 各页面通过自己下一次 request-lease 收到终态（task-canceled）退出等待，无需推送唤醒。
+    this.persistToStorage({ mode: 'full' });
     return { ok: true, canceled };
   }
 
