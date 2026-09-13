@@ -455,17 +455,43 @@ const SW_HOOK_SRC = `(() => {
     outMessages: 0,
     outByType: {},
     outBuckets: {},
+    // S2-1 SW 主线程归因（sidecar 专用）：事件循环延迟 500ms 桶 / 入站类型 500ms 桶 / storage.get 直方图
+    inTypeBuckets: {},
+    stallBuckets: {},
+    maxStallMs: 0,
+    storageGetCount: 0,
+    storageGetByKey: {},
+    stallTimer: null,
+    // S2-2 r3: 事件级时间戳 sidecar 缓冲（入站 request-lease / complete，出站 lease-prompt；定案尾部丢点）
+    swEvents: [],
   };
   self.__s0Hook = hook;
   self.__s0Snapshots = [];
   try {
-    chrome.runtime.onMessage.addListener((msg) => {
+    chrome.runtime.onMessage.addListener((msg, sender) => {
       try {
         let type = 'unknown';
         if (msg && typeof msg === 'object') type = String(msg.type || msg.action || msg.command || 'unknown');
         else type = typeof msg;
         hook.messages += 1;
         hook.byType[type] = (hook.byType[type] || 0) + 1;
+        try {
+          const bucket = Math.floor((Date.now() - hook.installedAt) / 500);
+          const arr = hook.inTypeBuckets[type] || (hook.inTypeBuckets[type] = []);
+          arr[bucket] = (arr[bucket] || 0) + 1;
+        } catch (err) {}
+        // S2-2 r3: 租约关键消息记精确 ms（{e, at, tab, id}；at 相对 installedAt）
+        if (type === 'task-center:request-lease' || type === 'task-center:complete') {
+          try {
+            if (hook.swEvents.length < 200000) {
+              let tid = -1;
+              try { tid = sender && sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : -1; } catch (err2) {}
+              let taskId = '';
+              try { taskId = String((msg.payload && (msg.payload.taskId || msg.payload.id)) || ''); } catch (err2) {}
+              hook.swEvents.push({ e: type === 'task-center:request-lease' ? 'rl' : 'c', at: Date.now() - hook.installedAt, tab: tid, id: taskId });
+            }
+          } catch (err) {}
+        }
       } catch (err) {}
       return false;
     });
@@ -501,6 +527,41 @@ const SW_HOOK_SRC = `(() => {
     };
   } catch (err) {}
   try {
+    const slForGet = chrome.storage.local;
+    const origGet = slForGet.get.bind(slForGet);
+    slForGet.get = function (keys, callback) {
+      try {
+        hook.storageGetCount += 1;
+        let keyName = 'unknown';
+        try {
+          if (Array.isArray(keys)) keyName = keys.map(String).sort().join('+');
+          else if (typeof keys === 'string') keyName = keys;
+          else if (keys == null) keyName = 'all';
+          else keyName = 'obj';
+        } catch (err) {}
+        hook.storageGetByKey[keyName] = (hook.storageGetByKey[keyName] || 0) + 1;
+      } catch (err) {}
+      return origGet.call(slForGet, keys, callback);
+    };
+  } catch (err) {}
+  try {
+    // S2-1 事件循环延迟探针：100ms tick，实际-期望漂移 >5ms 记入 500ms 桶（SW 主线程忙的直接证据）
+    let nextTick = Date.now() + 100;
+    hook.stallTimer = setInterval(() => {
+      try {
+        const now = Date.now();
+        const drift = now - nextTick;
+        nextTick += 100;
+        if (drift > 5) {
+          const bucket = Math.floor((now - hook.installedAt) / 500);
+          hook.stallBuckets[bucket] = (hook.stallBuckets[bucket] || 0) + drift;
+          if (drift > hook.maxStallMs) hook.maxStallMs = drift;
+        }
+        if (nextTick < now - 1000) nextTick = now + 100;
+      } catch (err) {}
+    }, 100);
+  } catch (err) {}
+  try {
     const recordOut = (message) => {
       try {
         hook.outMessages += 1;
@@ -519,6 +580,11 @@ const SW_HOOK_SRC = `(() => {
     const origTabsSend = chrome.tabs.sendMessage.bind(chrome.tabs);
     chrome.tabs.sendMessage = function (tabId, message, options) {
       recordOut(message);
+      try {
+        if (message && message.type === 'task-center:lease-prompt' && hook.swEvents.length < 200000) {
+          hook.swEvents.push({ e: 'lp', at: Date.now() - hook.installedAt, tab: tabId, reason: String((message.payload && message.payload.reason) || '') });
+        }
+      } catch (err) {}
       return origTabsSend.call(chrome.tabs, tabId, message, options);
     };
   } catch (err) {}
@@ -648,10 +714,33 @@ const SW_OUT_EXPR = `(() => {
   };
 })()`;
 
+/** S2-1 SW 主线程归因回读：事件循环延迟 500ms 桶 / 入站类型 500ms 桶 / storage.get 直方图（sidecar 专用，不进主报告） */
+const SW_ATTR_EXPR = `(() => {
+  const hook = self.__s0Hook;
+  if (!hook) return null;
+  return {
+    installedAt: hook.installedAt,
+    maxStallMs: hook.maxStallMs || 0,
+    stallBuckets: hook.stallBuckets || {},
+    inTypeBuckets: hook.inTypeBuckets || {},
+    storageGetCount: hook.storageGetCount || 0,
+    storageGetByKey: hook.storageGetByKey || {},
+  };
+})()`;
+
 /** SW taskCenter write-point payload drain (S0-2 field-level diff dedicated; drain semantics: fetch and clear) */
 const SW_SNAPSHOTS_DRAIN_EXPR = `(() => {
   const arr = self.__s0Snapshots || [];
   self.__s0Snapshots = [];
+  return arr;
+})();
+`;
+/** S2-2 r3: SW 事件级时间戳 drain（fetch-and-clear，与 snapshots 同款语义） */
+const SW_EVENTS_DRAIN_EXPR = `(() => {
+  const hook = self.__s0Hook;
+  if (!hook || !hook.swEvents) return [];
+  const arr = hook.swEvents;
+  hook.swEvents = [];
   return arr;
 })();
 `;
@@ -737,6 +826,15 @@ interface SwSnapshotRec {
   c: string;
   len: number;
   t: string;
+}
+
+/** S2-2 r3: SW 事件级时间戳记录（at 相对 SW hook installedAt 的 ms；e: rl=request-lease 入站, c=complete 入站, lp=lease-prompt 出站） */
+interface SwEventRec {
+  e: 'rl' | 'c' | 'lp';
+  at: number;
+  tab: number;
+  id?: string;
+  reason?: string;
 }
 
 interface SwAcc {
@@ -1070,6 +1168,8 @@ class RunSampler {
   private readonly totals: SwAcc = newSwAcc();
   /** S0-2: full capture of taskCenter write-point payloads (drained each tick from the SW side) */
   snapshots: SwSnapshotRec[] = [];
+  /** S2-2 r3: SW 事件级时间戳（request-lease/complete 入站、lease-prompt 出站；drained each tick） */
+  swEvents: SwEventRec[] = [];
   /** S0-1 第二步: dashboard render 分段计时记录（drained each tick from page side, 仅 scenario A 有值） */
   s1Segs: S1SegRec[] = [];
   private stopped = false;
@@ -1249,12 +1349,46 @@ class RunSampler {
   }
 
   /** Drain taskCenter payloads from the SW side (independent of the hook object, does not affect existing delta baselines) */
+  /** S2-1：回读 SW 主线程归因数据（SW 停摆/未安装时返回 null） */
+  async readSwAttribution(): Promise<Record<string, unknown> | null> {
+    const sw = this.swWorker;
+    if (!sw) return null;
+    try {
+      return (await sw.evaluate(SW_ATTR_EXPR)) as Record<string, unknown> | null;
+    } catch {
+      return null;
+    }
+  }
+
   private async drainSwSnapshots(sw: Worker): Promise<void> {
     try {
       const recs = (await sw.evaluate(SW_SNAPSHOTS_DRAIN_EXPR)) as SwSnapshotRec[] | null;
       if (recs && recs.length > 0) this.snapshots.push(...recs);
     } catch {
       // SW is temporarily stopped; retry on next round (payloads in the old SW instance are lost, acceptable, noted in docs)
+    }
+  }
+
+  /** S2-2 r3: drain SW 事件级时间戳（每 tick；SW 重启后旧实例缓冲丢失，与 snapshots 同口径） */
+  private async drainSwEvents(sw: Worker): Promise<void> {
+    try {
+      const recs = (await sw.evaluate(SW_EVENTS_DRAIN_EXPR)) as SwEventRec[] | null;
+      if (recs && recs.length > 0) this.swEvents.push(...recs);
+    } catch {
+      // SW is temporarily stopped; retry on next round
+    }
+  }
+
+  /** S2-2 r3: 最终 flush（run 结束侧落盘前取走残余缓冲） */
+  async readSwEvents(): Promise<SwEventRec[] | null> {
+    const sw = this.swWorker;
+    if (!sw) return null;
+    try {
+      const recs = (await sw.evaluate(SW_EVENTS_DRAIN_EXPR)) as SwEventRec[] | null;
+      if (recs && recs.length > 0) this.swEvents.push(...recs);
+      return this.swEvents.length > 0 ? this.swEvents : null;
+    } catch {
+      return null;
     }
   }
 
@@ -1281,6 +1415,7 @@ class RunSampler {
       return;
     }
     void this.drainSwSnapshots(sw);
+    void this.drainSwEvents(sw);
     const hook = value?.hook;
     if (!hook) {
       this.swTickCount += 1;
@@ -1477,6 +1612,40 @@ interface LongTaskBuffer {
   entries: { s: number; d: number }[];
   rafStalls?: { t: number; d: number }[];
   loaf?: LoafEntry[];
+}
+
+/** 剧本 C：detail 逐 tab 增强注入时延记录（S0-2 裁决数据：迟注入 vs waitForSelector 误判）。
+ * t 为页面内 performance.now 相对该 tab DCL 的毫秒数；recorderLost=true 表示读回时页面内记录器已丢失
+ * （文档被替换 / evaluate 失败）；navsAfterDcl = DCL 之后主框架导航次数（>0 即发生过文档替换）。 */
+interface S0TimelineTick {
+  t: number;
+  cs: string | null;
+  style: boolean;
+  related: boolean;
+  rs: string;
+  hrefTail: string;
+}
+interface DetailTimelineRec {
+  tab: number;
+  url: string;
+  /** goto 起点到 DCL 的耗时（goto 失败为 null） */
+  dclAt: number | null;
+  navsAfterDcl: number | null;
+  recorderLost: boolean;
+  csAt: number | null;
+  styleAt: number | null;
+  relatedAt: number | null;
+  /** 诊断：记录器实际执行次数 / 最近一次异常 / 安装时的 readyState / href */
+  snapCount: number;
+  lastErr: string | null;
+  installRs: string | null;
+  installHref: string | null;
+  ticks: S0TimelineTick[];
+  /** 终态（steady 后）二次读回：整个 session 的 rs/href 轨迹 + 记录器累计 tick 数 */
+  finalSnapCount: number;
+  finalRs: string | null;
+  finalHrefTail: string | null;
+  finalTicks: S0TimelineTick[];
 }
 
 /** 剧本 C：逐 tab 归因记录（sidecar 落盘 + 主报告 perTab 字段） */
@@ -1842,24 +2011,37 @@ async function collectDetailUrls(page: Page, count: number): Promise<string[]> {
 
 /** 运行时发现演员页 URL：探测 tab 打开首个详情页取第一个 a[href^="/act/"]。
  * 详情页对匿名会话是登录墙，只能在已登录 perf-s0 profile 内运行；失败返回 null，调用方把演员 tab 降级为列表页（记 failures）。 */
+/** 演员页 URL 发现：在候选详情页中依次查找 a[href^="/actors/"]（排除筛选页）。
+ * 单个详情页可能无演员（FC2/素人等），故按候选顺序最多尝试 4 个。 */
 async function discoverActorUrl(
   context: BrowserContext,
-  detailUrl: string,
+  candidateUrls: string[],
   failures: string[],
 ): Promise<string | null> {
-  let page: Page | null = null;
-  try {
-    page = await context.newPage();
-    await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    const href = await page.locator('a[href^="/act/"]').first().getAttribute('href', { timeout: 20_000 });
-    if (!href) return null;
-    return new URL(href, 'https://javdb570.com').toString();
-  } catch {
-    failures.push('C-mix: 演员页 URL 发现失败（详情页未见 a[href^="/act/"]），演员 tab 降级为列表页');
-    return null;
-  } finally {
-    if (page) await page.close().catch(() => {});
+  const attempts = Math.min(4, candidateUrls.length);
+  for (let i = 0; i < attempts; i += 1) {
+    let page: Page | null = null;
+    try {
+      page = await context.newPage();
+      await page.goto(candidateUrls[i], { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      // 站点演员链接为 /actors/<slug>（注意：`a[href^="/act/"]` 不匹配 /actors，
+      // 2026-09-12 排查 C-mix 发现超时根因之一）。排除 /actors/censored|uncensored|western 等筛选页。
+      const href = await page
+        .locator('a[href^="/actors/"]:not([href$="/censored"]):not([href$="/uncensored"]):not([href$="/western"])')
+        .first()
+        .getAttribute('href', { timeout: 8_000 });
+      if (!href) continue;
+      const url = new URL(href, 'https://javdb570.com').toString();
+      console.log(`[C-mix] 演员页 URL 发现成功（候选 ${i + 1}/${attempts}）: ${url}`);
+      return url;
+    } catch {
+      console.log(`[C-mix] 演员页候选 ${i + 1}（${candidateUrls[i]}）未发现演员链接，尝试下一个`);
+    } finally {
+      if (page) await page.close().catch(() => {});
+    }
   }
+  failures.push('C-mix: 演员页 URL 发现失败（候选详情页均未见 a[href^="/actors/"]），演员 tab 降级为列表页');
+  return null;
 }
 
 /** 剧本 C：构建逐 tab URL 与类型组成。
@@ -1896,7 +2078,7 @@ async function buildTabUrls(
   }
 
   let actorUrl: string | null = null;
-  if (actorCount > 0) actorUrl = await discoverActorUrl(context, detailUrls[0], failures);
+  if (actorCount > 0) actorUrl = await discoverActorUrl(context, detailUrls, failures);
 
   const urls: string[] = [];
   const kinds: TabKind[] = [];
@@ -1933,7 +2115,7 @@ async function runScenarioC(
   sampler: RunSampler,
   durations: Durations,
   failures: string[],
-): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; variant: CPagesVariant }> {
+): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; detailTimelines: DetailTimelineRec[]; variant: CPagesVariant }> {
   await context.addCookies([
     { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
   ]).catch(() => {});
@@ -1977,7 +2159,7 @@ async function runScenarioC(
     sampler.setPhase('cooldown');
     await sleep(1_000);
     await gate.close().catch(() => {});
-    return { tInteractiveMs: 0, perTab: [], variant };
+    return { tInteractiveMs: 0, perTab: [], detailTimelines: [], variant };
   }
 
   const pages: Page[] = [gate];
@@ -2002,10 +2184,75 @@ async function runScenarioC(
     await sleep(durations.controlColdMs);
   }
 
+  // --- S0-2 裁决数据：detail 逐 tab 注入时延记录器（仅 enhanced 臂）---
+  // DCL 时启动页面内 500ms 轮询，记 cs/style/related 首现时刻（t=相对 DCL）+ rs/href 轨迹；
+  // 记录器随文档销毁 → 读回为空即说明 DCL 后文档被替换。不改变 readyBy 判定，只加时延数据。
+  // 安装函数必须用字符串表达式（同 PAGE_HOOK_SRC 模式）：tsx/esbuild(keepNames) 会给 evaluate
+  // 箭头函数内的命名内层函数注入 __name helper 引用，页面侧无 __name → ReferenceError，
+  // 其后语句全部不执行（2026-09-12 n2 run 实证：w.__s0tl 已置位但 snapCount 恒 0）。
+  interface DetailTlState {
+    dclAt: number;
+    dclNavBase: number;
+    navs: { count: number };
+  }
+  const detailTlState = new Map<Page, DetailTlState>();
+  const DETAIL_TL_INSTALL_SRC = `(() => {
+    const w = window;
+    if (w.__s0tl) return 'dup';
+    const t0 = performance.now();
+    const data = {
+      csAt: null, styleAt: null, relatedAt: null,
+      ticks: [],
+      snapCount: 0,
+      lastErr: null,
+      installRs: document.readyState,
+      installHref: location.href.slice(-48),
+    };
+    w.__s0tl = data;
+    const snap = function () {
+      try {
+        const now = Math.round(performance.now() - t0);
+        const el = document.documentElement;
+        const cs = el ? (el.dataset.javdbExtensionInjected || null) : null;
+        const style = !!document.getElementById('video-detail-preview-styles');
+        const related = !!document.getElementById('jdb-related-lists-styles');
+        if (data.csAt === null && cs === '1') data.csAt = now;
+        if (data.styleAt === null && style) data.styleAt = now;
+        if (data.relatedAt === null && related) data.relatedAt = now;
+        if (data.ticks.length < 240) data.ticks.push({ t: now, cs: cs, style: style, related: related, rs: document.readyState, hrefTail: location.href.slice(-48) });
+        data.snapCount += 1;
+      } catch (e) {
+        data.lastErr = String(e);
+      }
+    };
+    snap();
+    const timer = window.setInterval(snap, 500);
+    w.__s0tlTimer = timer;
+    window.setTimeout(function () { window.clearInterval(timer); }, 120000);
+    return 'ok';
+  })()`;
+  const installTimelineRecorder = (page: Page): void => {
+    void page.evaluate(DETAIL_TL_INSTALL_SRC).catch(() => {});
+  };
+
   // --- 并发打开其余 N-1 个 tab（stagger 模拟用户连续打开）---
   for (let i = 1; i < tabCount; i += 1) {
     const page = await context.newPage();
     sampler.trackPage(page);
+    if (arm === 'enhanced' && kinds[i - 1] === 'detail') {
+      const gotoStart = Date.now();
+      const state: DetailTlState = { dclAt: Number.NaN, dclNavBase: 0, navs: { count: 0 } };
+      const onNav = (frame: import('@playwright/test').Frame): void => {
+        if (frame === page.mainFrame()) state.navs.count += 1;
+      };
+      page.on('framenavigated', onNav);
+      page.once('domcontentloaded', () => {
+        state.dclAt = Date.now() - gotoStart;
+        state.dclNavBase = state.navs.count;
+        installTimelineRecorder(page);
+      });
+      detailTlState.set(page, state);
+    }
     try {
       await page.goto(urls[i], { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
     } catch (error) {
@@ -2026,7 +2273,11 @@ async function runScenarioC(
         const kind = kinds[idx - 1] ?? 'list';
         try {
           if (kind === 'detail') {
-            await page.waitForSelector('#jdb-related-lists-styles, #video-detail-preview-styles, .enhanced-translation', { timeout: 2_500 });
+            // 就绪口径：state:'attached'（DOM 存在即就绪）。主口径 #video-detail-preview-styles 是
+            // <style> 标签——Playwright waitForSelector 默认 state:'visible' 对 style 标签永不满足
+            // （无渲染盒），是 15/16「未命中」假阴性的真正根因（2026-09-12 探针+最小复现实证）。
+            // 8s 为安全网：探针实测（无 instrument）16tab 标记 ≤DCL+1.7s，instrument 下也不应超 8s。
+            await page.waitForSelector('#jdb-related-lists-styles, #video-detail-preview-styles, .enhanced-translation', { state: 'attached', timeout: 8_000 });
             readyBy[idx] = 'marker';
             return;
           }
@@ -2054,8 +2305,22 @@ async function runScenarioC(
             failures.push(`C: tab${idx + 1} 详情页未落在 /v/（final=${page.url().slice(0, 120)}）——登录态失效或站点结构变化；先运行 pnpm tsx scripts/loginPerfS0.ts 重建登录态后重跑`);
             return;
           }
+          // 标记未命中时的注入状态诊断（区分「content script 没跑」vs「跑了但样式缺失」）
+          let diag = 'diag-unavailable';
+          try {
+            const d = await page.evaluate(() => ({
+              cs: document.documentElement?.dataset.javdbExtensionInjected ?? 'none',
+              style: !!document.getElementById('video-detail-preview-styles'),
+              related: !!document.getElementById('jdb-related-lists-styles'),
+              rs: document.readyState,
+              href: location.href.slice(0, 120),
+            }));
+            diag = `cs=${d.cs} style=${d.style} related=${d.related} rs=${d.rs} href=${d.href}`;
+          } catch (error) {
+            diag = `diag-err:${errMsg(error).slice(0, 80)}`;
+          }
           readyBy[idx] = 'settle';
-          failures.push(`C: tab${idx + 1} 详情页增强标记未命中（降级稳定窗，readyBy=settle）`);
+          failures.push(`C: tab${idx + 1} 详情页增强标记未命中（降级稳定窗，readyBy=settle; ${diag}）`);
           return;
         }
         if (kind === 'actor') {
@@ -2066,6 +2331,73 @@ async function runScenarioC(
         failures.push(`C: tab${idx + 1} 增强标记未出现`);
       }),
     );
+  }
+  // --- S0-2：detail 逐 tab 注入时延读回（裁决数据；不改变 readyBy 判定）---
+  // 读回 #1：readyBy 刚结束时记录器的 500ms tick 可能还没覆盖到 style 首现，
+  // 轮询至 styleAt 出现或 2s 上限（200ms 粒度），保证首现时刻被 tick 捕获。
+  const detailTimelines: DetailTimelineRec[] = [];
+  if (arm === 'enhanced') {
+    for (let i = 1; i < pages.length; i += 1) {
+      if (kinds[i - 1] !== 'detail') continue;
+      const state = detailTlState.get(pages[i]);
+      interface S0TlData {
+        csAt: number | null;
+        styleAt: number | null;
+        relatedAt: number | null;
+        ticks: S0TimelineTick[];
+        snapCount: number;
+        lastErr: string | null;
+        installRs: string;
+        installHref: string;
+      }
+      let data: S0TlData | null = null;
+      const readOnce = async (): Promise<S0TlData | null> => {
+        try {
+          return ((await pages[i].evaluate('window.__s0tl ?? null')) as S0TlData | null) ?? null;
+        } catch {
+          return null;
+        }
+      };
+      data = await readOnce();
+      if (data !== null && data.styleAt === null) {
+        const pollDeadline = Date.now() + 2_000;
+        while (data.styleAt === null && Date.now() < pollDeadline) {
+          await sleep(200);
+          const next = await readOnce();
+          if (next === null) break; // 文档已替换（记录器丢失）
+          data = next;
+        }
+      }
+      let url = '';
+      try {
+        url = pages[i].url().slice(0, 120);
+      } catch {
+        url = '(closed)';
+      }
+      detailTimelines.push({
+        tab: i + 1,
+        url,
+        dclAt: state && Number.isFinite(state.dclAt) ? state.dclAt : null,
+        navsAfterDcl: state ? state.navs.count - state.dclNavBase : null,
+        recorderLost: data === null,
+        csAt: data?.csAt ?? null,
+        styleAt: data?.styleAt ?? null,
+        relatedAt: data?.relatedAt ?? null,
+        snapCount: data?.snapCount ?? 0,
+        lastErr: data?.lastErr ?? null,
+        installRs: data?.installRs ?? null,
+        installHref: data?.installHref ?? null,
+        ticks: data?.ticks ?? [],
+        finalSnapCount: 0,
+        finalRs: null,
+        finalHrefTail: null,
+        finalTicks: [],
+      });
+    }
+    const summary = detailTimelines
+      .map((r) => `tab${r.tab}:${r.recorderLost ? 'recorder-lost' : r.styleAt === null ? `style-none(snap=${r.snapCount} err=${r.lastErr ?? '-'} rs=${r.installRs} href=${r.installHref})` : `style@${r.styleAt}ms cs@${r.csAt ?? '?'}ms navs+${r.navsAfterDcl ?? '?'}`}`)
+      .join(' ');
+    if (summary) log(`[C] detail 注入时延（t=相对各 tab DCL）: ${summary}`);
   }
   const tInteractiveMs = Date.now() - startedAt;
   log(`[C] ${pages.length} tab 就绪（增强注入/加载）=${tInteractiveMs}ms`);
@@ -2115,6 +2447,27 @@ async function runScenarioC(
       rec.url = page.url();
     } catch {
       rec.closed = true;
+    }
+    // S0-2 读回 #2：终态（steady 后）二次读回注入时延记录器 → 整个 session 的 rs/href 稳定性
+    if (!rec.closed && arm === 'enhanced' && i > 0 && kinds[i - 1] === 'detail') {
+      const tlRec = detailTimelines.find((r) => r.tab === i + 1);
+      if (tlRec && !tlRec.recorderLost) {
+        try {
+          const finalData = (await page.evaluate('window.__s0tl ?? null')) as {
+            snapCount?: number;
+            ticks?: S0TimelineTick[];
+          } | null;
+          if (finalData) {
+            tlRec.finalSnapCount = finalData.snapCount ?? 0;
+            tlRec.finalTicks = finalData.ticks ?? [];
+            const last = (finalData.ticks ?? [])[finalData.ticks!.length - 1];
+            tlRec.finalRs = last?.rs ?? null;
+            tlRec.finalHrefTail = last?.hrefTail ?? null;
+          }
+        } catch {
+          // 终态读回失败不阻断收尾
+        }
+      }
     }
     if (!rec.closed) {
       try {
@@ -2171,7 +2524,7 @@ async function runScenarioC(
     await page.close().catch(() => {});
   }
   await sleep(durations.cooldownMs);
-  return { tInteractiveMs, perTab, variant };
+  return { tInteractiveMs, perTab, detailTimelines, variant };
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,6 +2773,17 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
         );
         tInteractiveMs = result.tInteractiveMs;
         if (result.perTab.length > 0) perTab = result.perTab;
+        if (result.detailTimelines.length > 0) {
+          writeFileSync(path.join(args.outDir, `${label}-detail-timeline.json`), `${JSON.stringify({
+            scenario: 'C',
+            variant: args.pages,
+            arm: job.arm,
+            tabCount: args.tabs,
+            note: 't 为各 tab DCL 起点的页面内 performance.now 毫秒（500ms tick 粒度）；recorderLost=true 表示读回时页面内记录器丢失（文档替换/evaluate 失败）；navsAfterDcl 为 DCL 后主框架导航次数（>0 即文档被替换）；finalTicks/finalSnapCount 为 steady 后终态二次读回（整个 session 的 rs/href 稳定性）',
+            detailTimelines: result.detailTimelines,
+          }, null, 2)}\n`, 'utf8');
+          log(`[${label}] detail 注入时延 sidecar 已落盘 ${path.relative(CWD, path.join(args.outDir, `${label}-detail-timeline.json`))}`);
+        }
         writeFileSync(path.join(args.outDir, `${label}-per-tab.json`), `${JSON.stringify({
           scenario: 'C',
           variant: args.pages,
@@ -2497,6 +2861,18 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
       const segsPath = path.join(args.outDir, `${label}-s1-segs.json`);
       writeFileSync(segsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), count: sampler.s1Segs.length, records: sampler.s1Segs }, null, 2)}\n`, 'utf8');
       log(`[${label}] S1 render-seg sidecar 已落盘 ${segsPath} (count=${sampler.s1Segs.length})`);
+    }
+    const swAttr = await sampler.readSwAttribution();
+    if (swAttr) {
+      const swAttrPath = path.join(args.outDir, `${label}-sw-attribution.json`);
+      writeFileSync(swAttrPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), ...swAttr }, null, 2)}\n`, 'utf8');
+      log(`[${label}] SW 主线程归因 sidecar 已落盘 ${swAttrPath} (maxStall=${swAttr.maxStallMs}ms, storageGet=${swAttr.storageGetCount}次)`);
+    }
+    const swEvents = await sampler.readSwEvents();
+    if (swEvents) {
+      const swEventsPath = path.join(args.outDir, `${label}-sw-events.json`);
+      writeFileSync(swEventsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), count: swEvents.length, events: swEvents }, null, 2)}\n`, 'utf8');
+      log(`[${label}] SW 事件级时间戳 sidecar 已落盘 ${swEventsPath} (count=${swEvents.length})`);
     }
     printRunSummary(label, report);
     if (attribution) {
