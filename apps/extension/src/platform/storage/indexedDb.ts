@@ -1458,8 +1458,19 @@ export async function magnetPushLogsGetAll(): Promise<PersistedMagnetPushLogEntr
   return db.getAll('magnetPushLogs');
 }
 
+// S2-2 (cycle-7): retention 节流 —— 原实现每批日志写入后都执行「getSettings 读 + logs/magnetPushLogs 全索引扫描」
+// （S2-1 归因实测：16 详情页一轮 441 次 LOGS_BULK → settings 读 443 次 + 全扫 441 次，全部落在 browser 进程原生侧，
+//   是冷启动阶段 browser CPU 净增量 +35% 的主因）。
+// 改为同一 SW 生命周期内至多 60s 执行一次；初始戳 0 保证首次调用必然执行，保留清理不丢失，只是延迟。
+const RETENTION_MIN_INTERVAL_MS = 60_000;
+let lastLogsRetentionAt = 0;
+let lastMagnetPushRetentionAt = 0;
+
 async function magnetPushLogsEnforceRetention(): Promise<void> {
   try {
+    const now = Date.now();
+    if (now - lastMagnetPushRetentionAt < RETENTION_MIN_INTERVAL_MS) return;
+    lastMagnetPushRetentionAt = now;
     const settings = await getSettings();
     const logging: any = (settings as any)?.logging || {};
     let maxEntries = Number(logging.maxMagnetPushEntries ?? 10000);
@@ -1482,6 +1493,9 @@ async function magnetPushLogsEnforceRetention(): Promise<void> {
 // 保留策略：按条数限制
 async function logsEnforceRetention(): Promise<void> {
   try {
+    const now = Date.now();
+    if (now - lastLogsRetentionAt < RETENTION_MIN_INTERVAL_MS) return;
+    lastLogsRetentionAt = now;
     const settings = await getSettings();
     const logging: any = (settings as any)?.logging || {};
     let maxEntries = Number(logging.maxLogEntries ?? logging.maxEntries ?? 5000);
