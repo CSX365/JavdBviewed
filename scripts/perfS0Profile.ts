@@ -56,6 +56,12 @@ import {
   type WslChromeProcessCategory,
   type WslChromeProcessSummary,
 } from './wslCdpPerformanceProbe';
+import {
+  attributeLoafCpuToTasks,
+  aggregateOrchCpuAttributions,
+  type OrchTimelineEntry,
+  type LoafCpuEntry,
+} from './perfS0OrchCpuAttribution';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CWD = path.resolve(__dirname, '..');
@@ -362,7 +368,7 @@ const PAGE_HOOK_SRC = `(() => {
                 f = top.name || top.function || '';
               }
             }
-            state.loafAll.push({ s: entry.startTime, d: entry.duration, inv: inv, u: u, f: f });
+            state.loafAll.push({ s: entry.startTime, d: entry.duration, b: entry.blockingDuration ?? 0, inv: inv, u: u, f: f });
           }
         });
         loafObserver.observe({ type: 'long-animation-frame', buffered: true });
@@ -610,7 +616,82 @@ const LOAF_EXPR = `(() => {
   return data && Array.isArray(data.loaf) ? data.loaf : [];
 })()`;
 
-interface LoafEntry { s: number; d: number; inv: string; u: string; f: string }
+/** S0-1：读回 orchestrator 任务 timeline 的求值表达式（扩展经 window.__initOrchestrator__ 暴露，扩展侧零改动）。
+ * 注意：__initOrchestrator__ 挂在 content script 的 ISOLATED world，Playwright page.evaluate（main world）
+ * 不可见 → 必须经 CDP Runtime.evaluate + contextId 在 isolated world 内执行（见 readOrchTimelineViaCdp）。
+ * ts 为 performance.now()（document 相对），与 LoAF startTime 同源，可直接做窗口归因。
+ * detail 截断 200 字符（防错误文案撑大 sidecar）；读失败返回 null 不阻断收尾。 */
+const ORCH_TIMELINE_EXPR = `(() => {
+  const o = window.__initOrchestrator__;
+  if (o && typeof o.getState === 'function') {
+    try {
+      const st = o.getState();
+      if (st && Array.isArray(st.timeline)) {
+        return st.timeline.map((e) => ({
+          phase: e.phase,
+          label: e.label,
+          status: e.status,
+          ts: e.ts,
+          durationMs: e.durationMs ?? 0,
+          detail: typeof e.detail === 'string' ? e.detail.slice(0, 200) : undefined,
+        }));
+      }
+    } catch (err) { /* 读取失败按 null 处理 */ }
+  }
+  return null;
+})()`;
+
+/** S0-1：经 CDP 在 content script isolated world 内读回 orchestrator timeline。
+ * 步骤：Page.getFrameTree 取主 frame id → Runtime.enable（补发既有 executionContextCreated）
+ * → 等首个 auxData.isDefault=false 且 frameId 匹配主 frame 的 context（300ms 窗口，steady 末期 context 必已存在）
+ * → Runtime.evaluate(ORCH_TIMELINE_EXPR, contextId) returnByValue。
+ * 任何一步失败返回 null（不阻断收尾；sidecar 该 tab 记 timeline=null，归因计 unattributed）。 */
+async function readOrchTimelineViaCdp(page: Page): Promise<OrchTimelineEntry[] | null> {
+  let session: CDPSession | null = null;
+  try {
+    session = await page.context().newCDPSession(page);
+    const frameTree = (await session.send('Page.getFrameTree')) as {
+      frameTree?: { frame?: { id?: string } };
+    };
+    const rootFrameId = frameTree.frameTree?.frame?.id ?? null;
+    const isolatedCtxId = await new Promise<number | null>((resolve) => {
+      const nonDefault: number[] = [];
+      let matchedRoot: number | null = null;
+      const onEvent = (ev: { method: string; params?: { context?: { id: number; auxData?: { isDefault?: boolean; frameId?: string } } } }): void => {
+        if (ev.method !== 'Runtime.executionContextCreated') return;
+        const ctx = ev.params?.context;
+        if (!ctx) return;
+        const aux = ctx.auxData ?? {};
+        if (aux.isDefault !== false) return;
+        nonDefault.push(ctx.id);
+        if (rootFrameId && aux.frameId === rootFrameId && matchedRoot === null) matchedRoot = ctx.id;
+      };
+      session!.on('event', onEvent as never);
+      void session!.send('Runtime.enable').then(
+        () => {
+          // 优先主 frame 的 isolated world；拿不到 frameId 匹配时，若 isolated context 唯一则回退接受
+          setTimeout(() => resolve(matchedRoot ?? (nonDefault.length === 1 ? nonDefault[0] : null)), 300);
+        },
+        () => resolve(null),
+      );
+    });
+    if (isolatedCtxId === null) return null;
+    const resp = (await session.send('Runtime.evaluate', {
+      expression: ORCH_TIMELINE_EXPR,
+      contextId: isolatedCtxId,
+      returnByValue: true,
+    })) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+    if (resp.exceptionDetails) return null;
+    const value = resp.result?.value;
+    return Array.isArray(value) ? (value as OrchTimelineEntry[]) : null;
+  } catch {
+    return null;
+  } finally {
+    await session?.detach().catch(() => {});
+  }
+}
+
+interface LoafEntry { s: number; d: number; /** LoAF blockingDuration（CPU 时间，S0-1 任务归因用；字段名避开脱敏 key 模式） */ b: number; inv: string; u: string; f: string }
 interface LoafTopEntry { src: string; fn: string; invoker: string; count: number; totalMs: number }
 
 /** LoAF 按「调用栈最外层函数@脚本」聚合 → top-N 卡顿来源（回答「哪个业务模块的哪段代码导致长帧」） */
@@ -1666,6 +1747,14 @@ interface PerTabRec {
   loafTop: LoafTopEntry[];
 }
 
+/** S0-1：orchestrator 任务 CPU 归因逐 tab 原始数据；runJob 归因后落 ${'$'}{label}-orch-cpu.json sidecar（不进主报告，防 JSON 膨胀）。 */
+interface OrchTabCpuRaw {
+  tab: number;
+  url: string;
+  timeline: OrchTimelineEntry[] | null;
+  loaf: LoafCpuEntry[] | null;
+}
+
 /** 长任务按 startTime（document 相对，经 timeOrigin 换算 epoch）归因到 tab 时间窗。
  * 窗口顺序且互不重叠；不属于任何窗口（冷/热启动期）的条目归 unattributed。 */
 function attributeLongTasks(
@@ -2115,7 +2204,7 @@ async function runScenarioC(
   sampler: RunSampler,
   durations: Durations,
   failures: string[],
-): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; detailTimelines: DetailTimelineRec[]; variant: CPagesVariant }> {
+): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; detailTimelines: DetailTimelineRec[]; variant: CPagesVariant; orchCpu: OrchTabCpuRaw[] }> {
   await context.addCookies([
     { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
   ]).catch(() => {});
@@ -2159,7 +2248,7 @@ async function runScenarioC(
     sampler.setPhase('cooldown');
     await sleep(1_000);
     await gate.close().catch(() => {});
-    return { tInteractiveMs: 0, perTab: [], detailTimelines: [], variant };
+    return { tInteractiveMs: 0, perTab: [], detailTimelines: [], variant, orchCpu: [] };
   }
 
   const pages: Page[] = [gate];
@@ -2426,6 +2515,7 @@ async function runScenarioC(
 
   // --- 逐 tab 终态归因（全量累计 buffer + CDP 堆指标）---
   const perTab: PerTabRec[] = [];
+  const orchCpu: OrchTabCpuRaw[] = []; // S0-1：orchestrator 任务 CPU 归因原始数据
   for (let i = 0; i < pages.length; i += 1) {
     const page = pages[i];
     const rec: PerTabRec = {
@@ -2484,6 +2574,14 @@ async function runScenarioC(
             if (entry.d > rec.rafStallMaxMs) rec.rafStallMaxMs = entry.d;
           }
           rec.loafTop = summarizeLoafTop(data.loaf, 5);
+          // S0-1：顺手读回 orchestrator timeline（读不到 null 不阻断；loaf 原文随 sidecar 归因用）
+          const orchTimeline = await readOrchTimelineViaCdp(page);
+          orchCpu.push({
+            tab: i + 1,
+            url: rec.url,
+            timeline: orchTimeline,
+            loaf: data.loaf && data.loaf.length > 0 ? data.loaf : null,
+          });
         }
       } catch {
         rec.closed = true;
@@ -2524,7 +2622,7 @@ async function runScenarioC(
     await page.close().catch(() => {});
   }
   await sleep(durations.cooldownMs);
-  return { tInteractiveMs, perTab, detailTimelines, variant };
+  return { tInteractiveMs, perTab, detailTimelines, variant, orchCpu };
 }
 
 // ---------------------------------------------------------------------------
@@ -2793,6 +2891,31 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
           perTab: result.perTab,
         }, null, 2)}\n`, 'utf8');
         log(`[${label}] per-tab sidecar 已落盘 ${path.relative(CWD, path.join(args.outDir, `${label}-per-tab.json`))}`);
+        if (result.orchCpu.length > 0) {
+          const perTabAttr = result.orchCpu.map((t) => ({
+            tab: t.tab,
+            url: t.url,
+            timeline: t.timeline,
+            attribution: attributeLoafCpuToTasks(t.timeline, t.loaf),
+          }));
+          const aggregate = aggregateOrchCpuAttributions(perTabAttr.map((t) => t.attribution));
+          const orchCpuPath = path.join(args.outDir, `${label}-orch-cpu.json`);
+          writeFileSync(orchCpuPath, `${JSON.stringify({
+            capturedAt: new Date().toISOString(),
+            scenario: 'C',
+            variant: args.pages,
+            arm: job.arm,
+            tabCount: args.tabs,
+            note: 'timeline ts 与 LoAF s 均为页面内 performance.now()（document 相对，同源可比）；cpuMs=归因到任务窗口 [ts-durationMs, ts) 的 LoAF blockingDuration 之和；重叠窗口归属最早开始者；blockingDuration 缺失/≤0 的帧不计入 total（诚实口径）；unattributed=未落入任何任务窗口的帧；wallMs 为同 label 任务墙钟合计（并发窗口可重叠，仅参考）',
+            aggregate,
+            perTab: perTabAttr,
+          }, null, 2)}\n`, 'utf8');
+          log(`[${label}] orch 任务 CPU 归因 sidecar 已落盘 ${path.relative(CWD, orchCpuPath)}`);
+          const top = aggregate.tasks.filter((t) => t.cpuMs > 0).slice(0, 5)
+            .map((t) => `${t.phase}/${t.label}=${t.cpuMs}ms(wall=${t.wallMs}ms,${t.frames}帧)`)
+            .join(' ');
+          log(`[${label}] CPU 归因(orch任务) 跨${result.orchCpu.length}tab: total=${aggregate.totalCpuMs}ms unattributed=${aggregate.unattributed.cpuMs}ms top: ${top || '（无命中）'}`);
+        }
       }
       if (loafTop) printLoafTop(label, loafTop);
       finished = sampler.finish();
