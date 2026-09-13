@@ -4,6 +4,7 @@
  */
 
 import { getValue, setValue } from '../../utils/storage';
+import { parseReleaseDateText } from './releaseDateParser';
 import { showToast } from '../../platform/browser/toast';
 import type { ActorRecord } from '../../types';
 import { actorManager } from '../actors';
@@ -126,31 +127,13 @@ class ActorEnhancementManager {
   }
 
   /**
-   * 从列表项中解析发行日期（尽力而为）
+   * 从列表项中解析发行日期（尽力而为，逻辑见 releaseDateParser）。
    */
-  private parseReleaseDateFromItem(item: HTMLElement): number | null {
+  private parseReleaseDateFromItem(item: HTMLElement, previousTs: number | null = null): number | null {
     try {
-      // 常见：.meta 文本包含日期
       const meta = item.querySelector('.meta');
-      const text = (meta?.textContent || item.textContent || '').trim();
-      // 匹配 YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
-      const m = text.match(/(20\d{2}|19\d{2})[\.\/\-](\d{1,2})[\.\/\-](\d{1,2})/);
-      if (m) {
-        const y = parseInt(m[1], 10);
-        const mo = parseInt(m[2], 10) - 1;
-        const d = parseInt(m[3], 10);
-        const dt = new Date(y, mo, d).getTime();
-        return isNaN(dt) ? null : dt;
-      }
-      // 兜底：匹配 YYYY-MM（没有日）
-      const m2 = text.match(/(20\d{2}|19\d{2})[\.\/\-](\d{1,2})(?![\d\.\/\-])/);
-      if (m2) {
-        const y = parseInt(m2[1], 10);
-        const mo = parseInt(m2[2], 10) - 1;
-        const dt = new Date(y, mo, 1).getTime();
-        return isNaN(dt) ? null : dt;
-      }
-      return null;
+      const text = (meta?.textContent || item.textContent || '') || '';
+      return parseReleaseDateText(text, previousTs);
     } catch {
       return null;
     }
@@ -174,11 +157,14 @@ class ActorEnhancementManager {
     const now = Date.now();
     const thresholdMs = now - months * 30 * 24 * 60 * 60 * 1000; // 简化：按30天/月
 
-    // 找到第一条“小于阈值”的项
+    // 找到第一条“小于阈值”的项（列表按日期降序，previousTs 用于歧义消解）
     let insertBefore: HTMLElement | null = null;
+    let previousTs: number | null = null;
     for (const it of items) {
-      const ts = this.parseReleaseDateFromItem(it);
-      if (ts && ts < thresholdMs) {
+      const ts = this.parseReleaseDateFromItem(it, previousTs);
+      if (!ts) continue;
+      previousTs = ts;
+      if (ts < thresholdMs) {
         insertBefore = it;
         break;
       }
@@ -219,7 +205,7 @@ class ActorEnhancementManager {
           timer = window.setTimeout(() => this.applyTimeSegmentationDivider(), 200);
         }
       });
-      this.listObserver.observe(list, { childList: true, subtree: true });
+      this.listObserver.observe(list, { childList: true, subtree: true, characterData: true });
     } catch {}
   }
 
@@ -977,9 +963,11 @@ class ActorEnhancementManager {
       // 标记已应用，防止循环
       sessionStorage.setItem(appliedKey, Date.now().toString());
 
-      this.navigateWithTags(compatibleTags, lastFilter.sortType);
+      const navigated = this.navigateWithTags(compatibleTags, lastFilter.sortType);
 
-      showToast(`已应用保存的过滤器: ${this.getTagNames(compatibleTags).join(', ')}`, 'success');
+      if (navigated) {
+        showToast(`已应用保存的过滤器: ${this.getTagNames(compatibleTags).join(', ')}`, 'success');
+      }
     } catch (error) {
       console.error('应用保存的tag过滤器失败:', error);
       await this.applyDefaultFilter();
@@ -1007,8 +995,10 @@ class ActorEnhancementManager {
       // 标记已应用，防止循环
       sessionStorage.setItem(appliedKey, Date.now().toString());
 
-      this.navigateWithTags(compatibleTags, this.config.defaultSortType);
-      showToast(`已应用默认过滤器: ${this.getTagNames(compatibleTags).join(', ')}`, 'info');
+      const navigated = this.navigateWithTags(compatibleTags, this.config.defaultSortType);
+      if (navigated) {
+        showToast(`已应用默认过滤器: ${this.getTagNames(compatibleTags).join(', ')}`, 'info');
+      }
     }
   }
 
@@ -1030,11 +1020,27 @@ class ActorEnhancementManager {
     return tagCodes.map(code => this.availableTags.get(code) || code);
   }
 
-  private navigateWithTags(tags: string[], sortType: number = 0): void {
+  private navigateWithTags(tags: string[], sortType: number = 0): boolean {
+    // 站点要求登录才能使用演员页 tag 过滤（t= 参数）：未登录时导航到 t= URL 会被 302 到 /login。
+    // 为避免把用户带到登录页，未登录时跳过自动导航（用户手动点击 tag 不受影响）。
+    if (!this.isSiteUserLoggedIn()) {
+      console.log('🚫 站点要求登录后才能使用 tag 过滤，已跳过自动导航（手动点击 tag 不受影响）');
+      return false;
+    }
     const url = new URL(window.location.href);
     url.searchParams.set('t', tags.join(','));
     url.searchParams.set('sort_type', sortType.toString());
     window.location.href = url.toString();
+    return true;
+  }
+
+  /** 站点登录态探测：未登录时顶部导航渲染 <a class="navbar-item" href="/login"> 登录入口。 */
+  private isSiteUserLoggedIn(): boolean {
+    try {
+      return !document.querySelector('a.navbar-item[href="/login"]');
+    } catch {
+      return true;
+    }
   }
 
   private setupTagClickListener(): void {
