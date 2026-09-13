@@ -16,6 +16,7 @@ const ENHANCEMENT_FEATURE_META: Record<string, EnhancementFeatureMeta> = {
   '演员穿透': { icon: '🎭', status: '可用', tone: 'available', effect: '在列表卡片标题下方显示最多 3 位女性演员。', usage: '为可见卡片发起详情页请求并缓存 7 天，会增加网络与 CPU 开销。' },
   '列表显示控制': { icon: '📐', status: '可用', tone: 'available', effect: '调整列表列数和容器宽度以优化浏览体验。' },
   '快捷操作': { icon: '⚡', status: '可用', tone: 'available', effect: '在列表卡片上显示状态标签、状态快捷标识和收藏快捷按钮，可分别开关。' },
+  '资源标签': { icon: '🔖', status: '可用', tone: 'available', effect: '在列表卡片上标注中字、破解等资源证据。', usage: '仅来自列表原生标签与已验证的详情页磁力结果，不从标题猜测。' },
   '本地媒体库匹配': {
     icon: '🗂️',
     status: '可选',

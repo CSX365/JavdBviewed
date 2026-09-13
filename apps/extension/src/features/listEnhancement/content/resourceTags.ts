@@ -36,13 +36,13 @@ function getTagTexts(item: HTMLElement): string[] {
     .filter(Boolean);
 }
 
-/** 只从列表原生 tag 读取正向证据，绝不从影片标题猜测。 */
+/** 只从列表原生 tag 读取正向证据，绝不从影片标题猜测。文案随站点语言变化（zh/en）都要识别。 */
 export function parseNativeResourceTags(item: HTMLElement): NativeResourceTags {
   const texts = getTagTexts(item);
   return {
-    hasSubtitle: texts.some((text) => /含字幕|中文字幕|中字/i.test(text)),
-    hasMagnet: texts.some((text) => /含磁鏈|含磁链/i.test(text)),
-    hasNewMagnet: texts.some((text) => /今日新種|今日新种|新磁鏈|新磁链/i.test(text)),
+    hasSubtitle: texts.some((text) => /含字幕|中文字幕|中字|CnSub/i.test(text)),
+    hasMagnet: texts.some((text) => /含磁鏈|含磁链|\bDL\b/i.test(text)),
+    hasNewMagnet: texts.some((text) => /今日新種|今日新种|新磁鏈|新磁链|\bToday\b/i.test(text)),
   };
 }
 

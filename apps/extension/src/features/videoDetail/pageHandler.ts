@@ -926,10 +926,11 @@ async function markActorsOnPage(): Promise<void> {
 
         // 查找包含“演員/演员”的信息块
         const blocks = Array.from(document.querySelectorAll<HTMLElement>('.panel-block'));
+        // 区块标题随站点语言变化：zh=演員 / en=Actor(s)，两种都要匹配
         const actorBlock = blocks.find(block => {
             const strong = block.querySelector('strong');
             const text = strong?.textContent?.trim() || '';
-            return text.includes('演員') || text.includes('演员');
+            return text.includes('演員') || text.includes('演员') || /\bactors?\b/i.test(text);
         });
 
         if (!actorBlock) {

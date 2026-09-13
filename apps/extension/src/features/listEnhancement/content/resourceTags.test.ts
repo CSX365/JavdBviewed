@@ -67,6 +67,52 @@ describe('list resource tags', () => {
     expect(item.querySelector('.emby-library-status-tag')?.textContent).toBe('Emby已入库');
   });
 
+  it('recognizes English-locale native tags (site UI i18n: CnSub DL / DL / Today)', () => {
+    document.body.innerHTML = `
+      <div class="item">
+        <div class="tags has-addons">
+          <span class="tag is-warning">CnSub DL</span>
+        </div>
+      </div>
+      <div class="item" id="dl-only">
+        <div class="tags has-addons">
+          <span class="tag is-success">DL</span>
+        </div>
+      </div>
+      <div class="item" id="today-only">
+        <div class="tags has-addons">
+          <span class="tag is-info">Today</span>
+        </div>
+      </div>`;
+
+    const cnsub = document.querySelector<HTMLElement>('.item');
+    const dl = document.querySelector<HTMLElement>('#dl-only');
+    const today = document.querySelector<HTMLElement>('#today-only');
+    if (!cnsub || !dl || !today) throw new Error('test fixture items are missing');
+
+    // CnSub DL = 含中字磁鏈：同时具备字幕与磁链证据
+    expect(parseNativeResourceTags(cnsub)).toEqual({
+      hasSubtitle: true,
+      hasMagnet: true,
+      hasNewMagnet: false,
+    });
+    // DL = 含磁鏈
+    expect(parseNativeResourceTags(dl)).toEqual({
+      hasSubtitle: false,
+      hasMagnet: true,
+      hasNewMagnet: false,
+    });
+    // Today = 今日新種
+    expect(parseNativeResourceTags(today)).toEqual({
+      hasSubtitle: false,
+      hasMagnet: false,
+      hasNewMagnet: true,
+    });
+
+    renderResourceTags(cnsub, true, null, Date.now());
+    expect(cnsub.querySelector('.jdb-resource-tag')?.textContent).toBe('中字');
+  });
+
   it('renders cached tags for a card batch with one storage read and removes only its own tags when disabled', async () => {
     document.body.innerHTML = `
       <div class="item" id="first"><div class="tags has-addons"><span class="tag">含字幕</span></div></div>
