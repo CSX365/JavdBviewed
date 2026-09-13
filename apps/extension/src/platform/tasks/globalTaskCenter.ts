@@ -67,8 +67,14 @@ export class GlobalTaskCenter {
   private persistBurstTimer: ReturnType<typeof setTimeout> | null = null;
   private persistBurstPendingJson: string | null = null;
   private persistBurstPendingPayload: Record<string, unknown> | null = null;
+  private persistBurstPendingDedupeJson: string | null = null;
+  private persistBurstPendingMode: 'hot' | 'full' = 'hot';
   private persistBurstWaiters: Array<() => void> = [];
-  private lastPersistedContentJson: string | null = null;
+  // S1-C: 热/冷分层基线 —— hot（非终态任务）与 full（全量快照）各自维护内容指纹，互不干扰
+  private lastHotContentJson: string | null = null;
+  private lastFullContentJson: string | null = null;
+  // S1-C: dedupe 独立基线 —— 仅当 dedupe 内容变化时随快照合写（原每次快照写都全量重写 dedupe）
+  private lastPersistedDedupeJson: string | null = null;
   private lastGrantedLeasePersistence: Promise<void> = Promise.resolve();
   // S1-A (cycle-6): 租约授予合并窗口 —— N 次并发授予的 N 次全量快照写合并为一次写，
   // flush 完成后再 sendResponse（见 handleMessage REQUEST_LEASE）；SW 重启暴露窗口封顶于此值（原立即写为 0）
@@ -130,6 +136,10 @@ export class GlobalTaskCenter {
       const dedupeData = item[this.dedupeStorageKey];
       if (dedupeData && typeof dedupeData === 'object') {
         this.dedupeIndex = new Map(Object.entries(dedupeData));
+        // S1-C: 用恢复出的 dedupe 初始化基线，避免恢复后立即触发一次冗余 dedupe 重写
+        this.lastPersistedDedupeJson = this.dedupeIndex.size > 0
+          ? JSON.stringify(Object.fromEntries(this.dedupeIndex.entries()))
+          : null;
         console.log('[TaskCenter] Restored dedupe index:', this.dedupeIndex.size, 'entries');
       }
       await this.cancelRestoredTasksForClosedTabs();
@@ -166,7 +176,7 @@ export class GlobalTaskCenter {
       }
       if (canceled > 0) {
         console.log('[TaskCenter] Canceled restored tasks for closed tabs', { canceled });
-        this.persistToStorage();
+        this.persistToStorage({ mode: 'full' });
       }
     } catch (error) {
       console.warn('[TaskCenter] Failed to reconcile restored tasks with tabs:', error);
@@ -175,14 +185,17 @@ export class GlobalTaskCenter {
 
   // P1 FIX: 定期快照到 chrome.storage，防止 Service Worker 重启丢失状态
   // B5 (2026-09-07): snapshot 与 dedupeIndex 合并为单次 storage.set（原两次独立 set → 写次数减半）
-  // S1-B (I-4a): 写合并 —— (1) 快照内容未变化时跳过写（覆盖 30s 周期兜底与防抖写）；
+  // S1-B (I-4a): 写合并 —— (1) 快照内容与 dedupe 均未变化时跳过写（覆盖 30s 周期兜底与防抖写）；
   // (2) 冷启动首次写后 3s 内的突发写合并为窗口结束时一次写
-  private persistToStorage(options: { immediate?: boolean } = {}): Promise<void> {
+  // S1-C: mode='hot' 只持久化非终态任务（重启安全面）；'full' 为全量快照（周期兜底/人工操作，保留终态历史）
+  private persistToStorage(options: { immediate?: boolean; mode?: 'hot' | 'full' } = {}): Promise<void> {
     const storage = typeof chrome !== 'undefined' ? chrome.storage?.local : undefined;
     if (!storage) return Promise.resolve();
-    const { contentJson, payload } = this.buildPersistContent();
-    // I-4a: 内容未变 → 跳过全量重写
-    if (contentJson === this.lastPersistedContentJson) return Promise.resolve();
+    const mode = options.mode ?? 'hot';
+    const { contentJson, payload, dedupeJson } = this.buildPersistContent(mode);
+    const baseline = mode === 'hot' ? this.lastHotContentJson : this.lastFullContentJson;
+    // I-4a/S1-C: 快照内容与 dedupe 均未变 → 跳过重写
+    if (contentJson === baseline && dedupeJson === this.lastPersistedDedupeJson) return Promise.resolve();
     const now = Date.now();
     // 首次写立即落盘并锚定合并窗口；窗口结束后保持立即写；immediate（租约授予等并发边界写）豁免合并
     if (
@@ -191,11 +204,13 @@ export class GlobalTaskCenter {
       || options.immediate
     ) {
       if (this.persistBurstAnchorMs === null) this.persistBurstAnchorMs = now;
-      return this.commitPersistToStorage(storage, contentJson, payload);
+      return this.commitPersistToStorage(storage, mode, contentJson, dedupeJson, payload);
     }
-    // I-4a: 冷启动合并窗口内 → 合并为窗口结束时一次写
+    // I-4a: 冷启动合并窗口内 → 合并为窗口结束时一次写（mode 取最新一次请求）
     this.persistBurstPendingJson = contentJson;
     this.persistBurstPendingPayload = payload;
+    this.persistBurstPendingDedupeJson = dedupeJson;
+    this.persistBurstPendingMode = mode;
     this.persistBurstPendingSeq = this.persistCommitSeq;
     if (this.persistBurstTimer === null) {
       const delay = Math.max(0, this.persistBurstAnchorMs + this.persistBurstWindowMs - Date.now());
@@ -206,35 +221,52 @@ export class GlobalTaskCenter {
     });
   }
 
-  /** 构建持久化 payload 与内容指纹（savedAt 不进指纹，纯时间戳变化不视为内容变化） */
-  private buildPersistContent(): { contentJson: string; payload: Record<string, unknown> } {
-    const tasks = this.store.listTasks().map(record => ({
+  /** S1-C: hot 快照保留非终态任务 + dedupe-by-action 终态结果（多页去重复用真实执行结果，跨重启必须可见） */
+  private isHotRetained(record: GlobalTaskRecord): boolean {
+    const { descriptor, runtime } = record;
+    if (runtime.status !== 'done' && runtime.status !== 'error' && runtime.status !== 'canceled') return true;
+    return descriptor.shareScope === 'dedupe-by-action';
+  }
+
+  /** 构建持久化 payload 与内容指纹（savedAt 不进指纹，纯时间戳变化不视为内容变化）
+   *  S1-C: dedupe 移出快照指纹、单独变化检测 —— 每次 lease 授予写不再伴随全量 dedupe 重写 */
+  private buildPersistContent(mode: 'hot' | 'full' = 'full'): {
+    contentJson: string;
+    payload: Record<string, unknown>;
+    dedupeJson: string | null;
+  } {
+    const records = mode === 'hot'
+      ? this.store.listTasks().filter((record) => this.isHotRetained(record))
+      : this.store.listTasks();
+    const tasks = records.map(record => ({
       descriptor: record.descriptor,
       runtime: record.runtime,
     }));
     const completedLabels = Array.from(this.completedTaskLabels);
-    const contentJson = JSON.stringify({
-      tasks,
-      completedLabels,
-      dedupe: this.dedupeIndex.size > 0 ? Array.from(this.dedupeIndex.entries()) : null,
-    });
+    const contentJson = JSON.stringify({ tasks, completedLabels });
+    const dedupeEntries = this.dedupeIndex.size > 0 ? Object.fromEntries(this.dedupeIndex.entries()) : null;
+    const dedupeJson = dedupeEntries === null ? null : JSON.stringify(dedupeEntries);
     // P2 FIX: 同批持久化 dedupe index，防止 SW 重启后 dedupe 失效导致重复任务
     const payload: Record<string, unknown> = {
       [this.storageKey]: { tasks, completedLabels, savedAt: Date.now() },
     };
-    if (this.dedupeIndex.size > 0) {
-      payload[this.dedupeStorageKey] = Object.fromEntries(this.dedupeIndex.entries());
+    if (dedupeJson !== null && dedupeJson !== this.lastPersistedDedupeJson) {
+      payload[this.dedupeStorageKey] = dedupeEntries;
     }
-    return { contentJson, payload };
+    return { contentJson, payload, dedupeJson };
   }
 
   private commitPersistToStorage(
     storage: { set: (items: Record<string, unknown>) => void | Promise<void> },
+    mode: 'hot' | 'full',
     contentJson: string,
+    dedupeJson: string | null,
     payload: Record<string, unknown>,
   ): Promise<void> {
     // storage.set 失败原本即 fire-and-forget（catch 吞掉）；基线同步更新，避免跳过逻辑依赖微任务时序
-    this.lastPersistedContentJson = contentJson;
+    if (mode === 'hot') this.lastHotContentJson = contentJson;
+    else this.lastFullContentJson = contentJson;
+    if (dedupeJson !== null) this.lastPersistedDedupeJson = dedupeJson;
     this.persistCommitSeq += 1;
     return Promise.resolve(storage.set(payload)).catch(() => undefined).then(() => undefined);
   }
@@ -243,8 +275,11 @@ export class GlobalTaskCenter {
     this.persistBurstTimer = null;
     const pendingJson = this.persistBurstPendingJson;
     const pendingPayload = this.persistBurstPendingPayload;
+    const pendingDedupeJson = this.persistBurstPendingDedupeJson;
+    const pendingMode = this.persistBurstPendingMode;
     this.persistBurstPendingJson = null;
     this.persistBurstPendingPayload = null;
+    this.persistBurstPendingDedupeJson = null;
     const waiters = this.persistBurstWaiters;
     this.persistBurstWaiters = [];
     const done = (): void => {
@@ -253,9 +288,10 @@ export class GlobalTaskCenter {
     if (
       pendingJson === null
       || pendingPayload === null
-      || pendingJson === this.lastPersistedContentJson
       // S1-A: 已有更新的提交 → pending 过期（快照为全量覆盖，写回旧态会回滚新态）
       || this.persistBurstPendingSeq < this.persistCommitSeq
+      || (pendingJson === (pendingMode === 'hot' ? this.lastHotContentJson : this.lastFullContentJson)
+        && pendingDedupeJson === this.lastPersistedDedupeJson)
     ) {
       done();
       return;
@@ -264,7 +300,7 @@ export class GlobalTaskCenter {
       done();
       return;
     }
-    this.commitPersistToStorage(storage, pendingJson, pendingPayload).then(done);
+    this.commitPersistToStorage(storage, pendingMode, pendingJson, pendingDedupeJson, pendingPayload).then(done);
   }
 
   /**
@@ -297,12 +333,14 @@ export class GlobalTaskCenter {
       done();
       return;
     }
-    const { contentJson, payload } = this.buildPersistContent();
-    if (contentJson === this.lastPersistedContentJson) {
+    // S1-C: 租约授予窗写 hot 快照（仅非终态任务）—— 授予风暴期单次写体积减半，
+    // 并发边界语义不变（leased/running 任务始终在 hot 快照内，重启后租约槽位不丢失）
+    const { contentJson, payload, dedupeJson } = this.buildPersistContent('hot');
+    if (contentJson === this.lastHotContentJson && dedupeJson === this.lastPersistedDedupeJson) {
       done();
       return;
     }
-    this.commitPersistToStorage(storage, contentJson, payload).then(done);
+    this.commitPersistToStorage(storage, 'hot', contentJson, dedupeJson, payload).then(done);
   }
 
   private storageRef(): { set: (items: Record<string, unknown>) => void | Promise<void> } | null {
@@ -321,7 +359,7 @@ export class GlobalTaskCenter {
     }
   }
 
-  /** Collapse bursty task completions into one full snapshot write. */
+  /** Collapse bursty task updates into one hot snapshot write (S1-C). */
   private schedulePersistToStorage(): void {
     if (this.persistDebounceTimer !== null) return;
     this.persistDebounceTimer = setTimeout(() => {
@@ -332,8 +370,10 @@ export class GlobalTaskCenter {
 
   // P1 FIX: 跨页面依赖同步 - 通知任务中心某个 label 的任务已完成
   markTaskLabelCompleted(label: string): void {
+    const had = this.completedTaskLabels.has(label);
     this.completedTaskLabels.add(label);
-    this.schedulePersistToStorage();
+    // S1-C: 仅 label 首次完成才触发防抖写；多页高并发下同一 label 的重复完成不再驱动快照写
+    if (!had) this.schedulePersistToStorage();
   }
 
   // P1 FIX: 查询某个 label 是否已在全局完成（供 content script 调用）
@@ -952,6 +992,10 @@ export class GlobalTaskCenter {
     this.store.clear();
     this.dedupeIndex.clear();
     this.completedTaskLabels.clear();
+    // S1-C: 存储键已移除，基线同步失效，避免后续写被「内容未变」误跳过
+    this.lastHotContentJson = null;
+    this.lastFullContentJson = null;
+    this.lastPersistedDedupeJson = null;
     chrome.storage.local.remove([this.storageKey, this.dedupeStorageKey]).catch(() => {});
     return { ok: true };
   }
@@ -968,7 +1012,7 @@ export class GlobalTaskCenter {
       }
       cleared += 1;
     }
-    this.persistToStorage();
+    this.persistToStorage({ mode: 'full' });
     return { ok: true, cleared };
   }
 
@@ -993,7 +1037,8 @@ export class GlobalTaskCenter {
     if (this.persistTimer) return;
     this.persistTimer = setInterval(() => {
       this.cleanupStaleTasks();
-      this.persistToStorage();
+      // S1-C: 周期兜底走全量快照 —— 终态历史随周期落盘（展示 + dedupe-by-action 之外记录的保留）
+      this.persistToStorage({ mode: 'full' });
     }, 30_000);
   }
 
