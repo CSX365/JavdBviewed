@@ -33,6 +33,9 @@ import { OrchestratorRetryTimers } from './retryTimers';
 import { countContentPerformanceEvent } from '../../../platform/tasks';
 import {
   createTaskKey,
+  createDeferredRetryKey,
+  getBackgroundLeaseRetryDelayMs,
+  getBackgroundStartStaggerMs,
   getDeferredRetryDelayMs,
   getDependencyWaitLimitMs,
   getHiddenIdleDelayMs,
@@ -88,6 +91,14 @@ class InitOrchestrator {
   private taskDependencies = new Map<string, string[]>(); // 任务依赖关系
   private retryTimers = new OrchestratorRetryTimers();
   private foregroundDeferredTaskKeys = new Set<string>();
+
+  // S1: 后台 tab 被租约预算拒绝后的退避计数（key=phase::label）
+  private readonly backgroundLeaseDenials = new Map<string, number>();
+  // S1: 处于退避等待中的后台租约重试（切回前台立即重跑，不等退避定时器）
+  private readonly pendingBackgroundLeaseRetries = new Map<string, { phase: InitPhase; st: ManagedScheduledTask }>();
+  // S1: 后台 tab 重任务阶段错峰启动窗口
+  private highPhaseArmed = true;
+  private backgroundStaggerTimer?: number;
   private stallDetectionTimer?: number;
   private hiddenLeaseProtectionTimer?: number;
   private removeVisibilityListener?: () => void;
@@ -195,6 +206,26 @@ class InitOrchestrator {
           this.runTask(phase, st).catch(() => {});
         }
       }
+
+      // S1: 后台租约退避等待中的任务，切回前台后立即重跑（前台预算更大，不再等退避定时器）
+      for (const [key, pending] of [...this.pendingBackgroundLeaseRetries]) {
+        const [ph, label] = key.split('::', 2);
+        this.retryTimers.clear(ph as InitPhase, label);
+        this.pendingBackgroundLeaseRetries.delete(key);
+        this.backgroundLeaseDenials.delete(key);
+        if (!pending.st.completed && !pending.st.running) {
+          this.log('background lease retry resumed after visibility restore', { phase: ph, label });
+          this.runTask(ph as InitPhase, pending.st).catch(() => {});
+        }
+      }
+
+      // S1: 错峰窗口尚未结束但页面已回前台 → 立即开始重任务阶段
+      if (this.backgroundStaggerTimer !== undefined) {
+        window.clearTimeout(this.backgroundStaggerTimer);
+        this.backgroundStaggerTimer = undefined;
+        this.highPhaseArmed = true;
+        this.startPostCriticalPhases();
+      }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     this.removeVisibilityListener = () => document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -256,8 +287,17 @@ class InitOrchestrator {
       return;
     }
 
-    const retryDelayMs = getDeferredRetryDelayMs(waitReason);
+    // S1: 后台 tab 的容量型等待（租约预算拒绝/tab-hidden）改用指数退避+抖动，
+    // 避免 16 后台 tab 以 1200ms 定频重排造成 SW 消息风暴（request-lease 20~40×）。
+    const retryKey = createDeferredRetryKey(phase, label);
+    const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
+    const isCapacityWait = isLeaseAvailabilityWaitReason(waitReason) || waitReason === 'tab-hidden';
+    let retryDelayMs = getDeferredRetryDelayMs(waitReason);
+    if (isCapacityWait && hidden) {
+      retryDelayMs = getBackgroundLeaseRetryDelayMs(this.backgroundLeaseDenials.get(retryKey) ?? 0);
+    }
     const scheduled = this.retryTimers.schedule(phase, label, retryDelayMs, () => {
+      this.pendingBackgroundLeaseRetries.delete(retryKey);
       if (usesLocalRetryBudget && taskId) {
         const newCount = incrementTaskRetryCount(taskId);
         this.log('retry: incrementing budget', { phase, label, taskId, retryCount: newCount });
@@ -268,7 +308,11 @@ class InitOrchestrator {
       this.runTask(phase, st).catch(() => {});
     });
     if (!scheduled) return;
-    this.log('deferred retry scheduled', { phase, label, waitReason, retryDelayMs });
+    if (isCapacityWait && hidden) {
+      this.backgroundLeaseDenials.set(retryKey, (this.backgroundLeaseDenials.get(retryKey) ?? 0) + 1);
+      this.pendingBackgroundLeaseRetries.set(retryKey, { phase, st });
+    }
+    this.log('deferred retry scheduled', { phase, label, waitReason, retryDelayMs, backgroundBackoff: isCapacityWait && hidden });
   }
 
   private scheduleDependencyRetry(phase: InitPhase, st: ManagedScheduledTask, unmetDeps: string[]): void {
@@ -496,8 +540,14 @@ class InitOrchestrator {
     }
     this.removeVisibilityListener?.();
     this.removeVisibilityListener = undefined;
+    if (this.backgroundStaggerTimer !== undefined) {
+      window.clearTimeout(this.backgroundStaggerTimer);
+      this.backgroundStaggerTimer = undefined;
+    }
     this.retryTimers.clearAll();
     this.foregroundDeferredTaskKeys.clear();
+    this.backgroundLeaseDenials.clear();
+    this.pendingBackgroundLeaseRetries.clear();
     if (this.metricsSaveTimeout !== undefined) {
       window.clearTimeout(this.metricsSaveTimeout);
       this.metricsSaveTimeout = undefined;
@@ -728,6 +778,12 @@ class InitOrchestrator {
         if (st.managedDescriptor?.taskId) {
           clearTaskRetryBudget(st.managedDescriptor.taskId);
         }
+        // S1: 成功后重置后台退避计数
+        if (st.options.label) {
+          const retryKey = createDeferredRetryKey(phase, st.options.label);
+          this.backgroundLeaseDenials.delete(retryKey);
+          this.pendingBackgroundLeaseRetries.delete(retryKey);
+        }
         // 标记任务为已完成（白名单 label 同步 global，供跨页 dependsOn）
         this.markLocalAndMaybeGlobalComplete(label);
         // A high task may depend on data from a later phase. Recheck pending
@@ -791,6 +847,12 @@ class InitOrchestrator {
             `${CONTENT_PERFORMANCE_DIAGNOSTIC_LABELS.orchestratorTaskPrefix}${phase}.${label}`,
             durationMs,
           );
+        }
+        // S1: 任务终止性失败后清理后台退避状态
+        if (st.options.label) {
+          const retryKey = createDeferredRetryKey(phase, st.options.label);
+          this.backgroundLeaseDenials.delete(retryKey);
+          this.pendingBackgroundLeaseRetries.delete(retryKey);
         }
         // 保存任务详细信息（包含错误）
         this.saveTaskDetail(phase, label, 'error', durationMs, String(e));
@@ -924,6 +986,27 @@ class InitOrchestrator {
       await this.runTask('critical', st);
     }
 
+    // S1: 后台 tab 重任务阶段错峰启动（flatten 16 tab 冷相位 CPU 峰）；前台 tab 立即开始。
+    // critical（videoStatus:initialSync，background_allowed）不受影响。
+    const staggerMs = (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+      ? getBackgroundStartStaggerMs()
+      : 0;
+    if (staggerMs > 0) {
+      this.highPhaseArmed = false;
+      this.log('background stagger', { staggerMs });
+      this.backgroundStaggerTimer = window.setTimeout(() => {
+        this.backgroundStaggerTimer = undefined;
+        this.highPhaseArmed = true;
+        this.startPostCriticalPhases();
+      }, staggerMs);
+    } else {
+      this.startPostCriticalPhases();
+    }
+    endDiagnosticSpan();
+  }
+
+  /** critical 之后启动 high/deferred/idle（前台立即调用；后台 tab 在错峰窗口结束后调用）。 */
+  private startPostCriticalPhases(): void {
     // P0 FIX: high 阶段改为后台并发跑，不再阻塞 deferred/idle
     // 用 fire-and-forget 启动，所有 high 任务进入任务中心竞争 lease
     this.runHighTasksWithConcurrencyControl().catch((e) => {
@@ -942,7 +1025,6 @@ class InitOrchestrator {
     const afterSchedule = performance.now();
     this.emit('run:scheduledDeferred', { ts: afterSchedule, relativeTs: this.relTs(afterSchedule) });
     this.log('run:scheduledDeferred', { ts: Math.round(afterSchedule), relative: Math.round(this.relTs(afterSchedule)) });
-    endDiagnosticSpan();
   }
 
   on(event: string, listener: (payload: any) => void): void {
@@ -959,6 +1041,8 @@ class InitOrchestrator {
    * 受控并发执行high阶段任务（支持优先级排序和依赖检查）
    */
   private async runHighTasksWithConcurrencyControl(): Promise<void> {
+    // S1: 后台 tab 错峰窗口未结束时，依赖完成触发的 high 复检也不得抢跑
+    if (!this.highPhaseArmed) return;
     await runHighPhaseTasks({
       tasks: this.phases.high.filter((task) => !task.completed),
       completedTasks: this.completedTasks,
