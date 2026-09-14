@@ -110,7 +110,7 @@ const DASH_HOOK_SRC = `(() => {
   // DOM mutation 桶（观察整个 body，记录桶计数与涉及节点数；tab 内容区变化占主体）
   let bucketStart = performance.now();
   let bucketCount = 0;
-  let mutObs: MutationObserver | null = null;
+  let mutObs = null;
   try {
     mutObs = new MutationObserver((muts) => {
       bucketCount += muts.length;
