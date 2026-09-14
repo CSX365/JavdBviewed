@@ -39,6 +39,7 @@ export interface DiagnosticSummary {
   steadyJsHeapSlopeBytesPerSecond: number;
   longTaskCount: number;
   longTaskP95Ms: number | null;
+  cpuIntegralCoreSec: number;
   lifecycleCounts: Record<string, number>;
   cooldownRssBytes: number | null;
 }
@@ -186,6 +187,21 @@ function mergeLifecycleCounts(samples: readonly DiagnosticSample[]): Record<stri
   return merged;
 }
 
+/**
+ * CPU 积分（core·s）：样本 cpuPercent 为该采样间隔的平均占比（见 perfS0Profile tick），
+ * 故区间 (at[i-1], at[i]] 以当前样本值计（后矩形法）。首样本无前置区间，计 0。
+ */
+function calculateCpuIntegralCoreSec(samples: readonly DiagnosticSample[]): number {
+  let integral = 0;
+  for (let i = 1; i < samples.length; i += 1) {
+    const dtMs = samples[i].at - samples[i - 1].at;
+    if (dtMs > 0 && Number.isFinite(samples[i].cpuPercent)) {
+      integral += (samples[i].cpuPercent / 100) * (dtMs / 1000);
+    }
+  }
+  return Math.round(integral * 1000) / 1000;
+}
+
 export function summarizeDiagnosticSamples(samples: readonly DiagnosticSample[]): DiagnosticSummary {
   const steadySamples = samples.filter((sample) => sample.phase === 'steady');
   const cooldownSamples = samples.filter((sample) => sample.phase === 'cooldown');
@@ -211,6 +227,7 @@ export function summarizeDiagnosticSamples(samples: readonly DiagnosticSample[])
     ),
     longTaskCount: longTasks.count,
     longTaskP95Ms: longTasks.p95Ms,
+    cpuIntegralCoreSec: calculateCpuIntegralCoreSec(samples),
     lifecycleCounts: mergeLifecycleCounts(samples),
     cooldownRssBytes: lastCooldown?.rssBytes ?? null,
   };

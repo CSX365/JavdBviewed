@@ -2709,7 +2709,7 @@ function printRunSummary(label: string, report: RunReport): void {
   }
   const totals = report.totals;
   log(
-    `  [totals] longTaskP95=${totals.diagnostic.longTaskP95Ms ?? '-'}ms `
+    `  [totals] longTaskP95=${totals.diagnostic.longTaskP95Ms ?? '-'}ms cpu积分=${totals.diagnostic.cpuIntegralCoreSec}core·s `
     + `swMsg=${totals.sw.messages} swOut=${totals.sw.outMessages} swSet=${totals.sw.setCount}次/${Math.round(totals.sw.setBytes / 1024)}KB `
     + 'sw类型=' + JSON.stringify(totals.sw.byType)
     + ' sw出站类型=' + JSON.stringify(totals.sw.outByType)

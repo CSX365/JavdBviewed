@@ -64,6 +64,7 @@ describe('performance diagnostics', () => {
       steadyJsHeapSlopeBytesPerSecond: 0,
       longTaskCount: 0,
       longTaskP95Ms: null,
+      cpuIntegralCoreSec: 0.09,
       lifecycleCounts: {},
       cooldownRssBytes: 120,
     });

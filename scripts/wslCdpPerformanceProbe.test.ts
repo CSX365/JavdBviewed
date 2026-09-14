@@ -1036,6 +1036,7 @@ describe('WSL CDP performance probe helpers', () => {
       steadyJsHeapSlopeBytesPerSecond: 0,
       longTaskCount: 0,
       longTaskP95Ms: null,
+      cpuIntegralCoreSec: 0.04,
       lifecycleCounts: {},
       cooldownRssBytes: null,
     });
