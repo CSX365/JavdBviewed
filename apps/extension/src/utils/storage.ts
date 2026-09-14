@@ -5,6 +5,7 @@ import { STORAGE_KEYS, DEFAULT_SETTINGS } from './config';
 import type { ExtensionSettings } from '../types';
 import { log } from './logController';
 import { dedupeSearchEngines, migrateSearchEngineTemplateIcon } from './searchEngines';
+import { applyEmbyDeletedServerTombstones } from '../shared/embyDeletedServers';
 import { createChromeStorage } from '../platform/storage/chromeStorage';
 
 const VIEWED_RECORDS_STORAGE_KEY = 'viewed';
@@ -352,12 +353,22 @@ export async function getSettings(): Promise<ExtensionSettings> {
   return mergedSettings;
 }
 
-export function saveSettings(settings: ExtensionSettings): Promise<void> {
+export async function saveSettings(settings: ExtensionSettings): Promise<void> {
   log.storage('Saving settings to storage', {
     key: STORAGE_KEYS.SETTINGS,
     hasPrivacy: !!settings.privacy,
     screenshotModeEnabled: settings.privacy?.screenshotMode?.enabled,
     protectedElementsCount: settings.privacy?.screenshotMode?.protectedElements?.length
   });
+  // Emby 源删除永久墓碑：与存储中的原始 settings diff，记录消失的 server id。
+  // fail-open：任何异常只记日志，不阻断主保存。
+  try {
+    if (settings && typeof settings === 'object') {
+      const prev = await getValue<unknown>(STORAGE_KEYS.SETTINGS, undefined);
+      applyEmbyDeletedServerTombstones(prev, settings as unknown as Record<string, unknown>);
+    }
+  } catch (error) {
+    log.storage('Emby deletedServerIds tombstone apply failed (fail-open)', error);
+  }
   return setValue(STORAGE_KEYS.SETTINGS, settings);
 }

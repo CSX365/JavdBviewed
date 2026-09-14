@@ -40,6 +40,7 @@ import {
 import { markCloudStorageWrite } from './storageChangeGate';
 import { shouldSyncStorageItemKey, STORAGE_ITEM_TYPE } from './storageItemPolicy';
 import { mergeMediaCleanupStorageValue } from '../mediaCleanup';
+import { filterEmbyImportedMediaServers } from '../../shared/embyDeletedServers';
 
 export const EXTENSION_SYNC_ENTITY_TYPES: readonly SyncEntityType[] = [
   'video',
@@ -489,7 +490,11 @@ async function applyOne(entity: SyncEntity): Promise<void> {
         return;
       }
       const localValue = await getValue<unknown>(key, undefined);
-      const mergedValue = mergeMediaCleanupStorageValue(key, localValue, value);
+      // settings 键：导入侧按 local∪remote 墓碑过滤 mediaServers，防已删源复活
+      const mergedValue =
+        key === STORAGE_KEYS.SETTINGS
+          ? filterEmbyImportedMediaServers(localValue, value)
+          : mergeMediaCleanupStorageValue(key, localValue, value);
       markCloudStorageWrite(key, mergedValue);
       await setValue(key, mergedValue);
       return;
