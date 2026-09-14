@@ -11,6 +11,7 @@ import { buildMediaItemUrl } from '../../../../features/embyLibrary/domain/libra
 import type { SettingsValidationResult, SettingsSaveResult } from '../types';
 import type { ExtensionSettings } from '../../../../types';
 import type { EmbyLibraryIndexEntry, EmbyMediaServer } from '../../../../features/embyLibrary/types';
+import { hasUsableServerCredentials } from '../../../../apps/dashboard/pages/settings/emby/embySettingsModel';
 
 interface LibrarySyncServerResult {
     serverId?: string;
@@ -214,8 +215,8 @@ export class EmbySettings extends BaseSettingsPanel {
             if (!this.isValidServerUrl(server.url)) {
                 errors.push(`媒体服务器 ${index + 1} 地址需要使用 http 或 https`);
             }
-            if (!server.apiKey.trim()) {
-                errors.push(`媒体服务器 ${index + 1} API Key 不能为空`);
+            if (!hasUsableServerCredentials(server)) {
+                errors.push(`媒体服务器 ${index + 1} 需要至少一种凭据（API Key / 访问令牌 / 用户名+密码）`);
             }
         });
 

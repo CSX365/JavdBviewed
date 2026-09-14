@@ -22,6 +22,7 @@ import {
   updateMediaServerAt,
   validateEmbyForm,
   validateMediaServerInput,
+  hasUsableServerCredentials,
 } from './embySettingsModel';
 import { isEmbyRecognitionEnabled, isEmbyLibraryEnabled } from '../../../../../utils/config';
 
@@ -216,8 +217,101 @@ describe('embySettingsModel', () => {
     expect(bad.isValid).toBe(false);
     expect(bad.errors.some((e) => e.includes('额外匹配地址'))).toBe(true);
     expect(bad.errors.some((e) => e.includes('http 或 https'))).toBe(true);
-    expect(bad.errors.some((e) => e.includes('API Key'))).toBe(true);
+    expect(bad.errors.some((e) => e.includes('需要至少一种凭据'))).toBe(true);
     expect(bad.errors.some((e) => e.includes('同步间隔'))).toBe(true);
+  });
+
+  it('accepts servers with login-session credentials (no apiKey) for cross-device parity', () => {
+    // 云同步/桌面端来源：仅登录会话（accessToken+userId），无 apiKey → 应可保存
+    expect(
+      validateEmbyForm({
+        ...DEFAULT_EMBY_SETTINGS_FORM,
+        mediaServers: [
+          {
+            id: 's-token',
+            type: 'emby',
+            name: 'A',
+            url: 'http://a.local',
+            apiKey: '',
+            enabled: true,
+            accessToken: 'tok',
+            userId: 'u1',
+          },
+        ],
+      }).isValid,
+    ).toBe(true);
+
+    // 仅用户名+密码 → 应可保存
+    expect(
+      validateEmbyForm({
+        ...DEFAULT_EMBY_SETTINGS_FORM,
+        mediaServers: [
+          {
+            id: 's-pwd',
+            type: 'emby',
+            name: 'B',
+            url: 'http://b.local',
+            apiKey: '',
+            enabled: true,
+            username: 'u',
+            password: 'p',
+          },
+        ],
+      }).isValid,
+    ).toBe(true);
+
+    // 只有用户名没有密码 → 仍缺凭据
+    const bad = validateEmbyForm({
+      ...DEFAULT_EMBY_SETTINGS_FORM,
+      mediaServers: [
+        {
+          id: 's-useronly',
+          type: 'emby',
+          name: 'C',
+          url: 'http://c.local',
+          apiKey: '',
+          enabled: true,
+          username: 'u',
+        },
+      ],
+    });
+    expect(bad.isValid).toBe(false);
+    expect(bad.errors.some((e) => e.includes('需要至少一种凭据'))).toBe(true);
+
+    // 仅 apiKey（空白 apiKey 视为无）
+    expect(
+      validateEmbyForm({
+        ...DEFAULT_EMBY_SETTINGS_FORM,
+        mediaServers: [
+          {
+            id: 's-key',
+            type: 'emby',
+            name: 'D',
+            url: 'http://d.local',
+            apiKey: 'key-1',
+            enabled: true,
+          },
+        ],
+      }).isValid,
+    ).toBe(true);
+  });
+
+  it('hasUsableServerCredentials honors any single credential path', () => {
+    expect(
+      hasUsableServerCredentials({ apiKey: ' k ', accessToken: undefined, username: undefined, password: undefined }),
+    ).toBe(true);
+    expect(
+      hasUsableServerCredentials({ apiKey: '', accessToken: 'tok', username: undefined, password: undefined }),
+    ).toBe(true);
+    expect(
+      hasUsableServerCredentials({ apiKey: ' ', accessToken: '', username: 'u', password: 'p' }),
+    ).toBe(true);
+    expect(
+      hasUsableServerCredentials({ apiKey: '', accessToken: '', username: 'u', password: '' }),
+    ).toBe(false);
+    expect(
+      hasUsableServerCredentials({ apiKey: '', accessToken: '', username: '', password: 'p' }),
+    ).toBe(false);
   });
 
   it('keeps empty match-url drafts in settings for editing while persisting only filled ones', () => {

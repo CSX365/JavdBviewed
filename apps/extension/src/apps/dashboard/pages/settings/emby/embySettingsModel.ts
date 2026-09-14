@@ -345,6 +345,28 @@ export function applyEmbyFormToSettings(
 }
 
 /**
+ * 服务器是否具备至少一种可用凭据（API Key / 访问令牌 / 用户名+密码）。
+ * 对齐桌面端 MediaSourceCredentialsSummary.usable 契约：云同步/旧设备可能只带
+ * 登录会话而无 apiKey，不应整页阻断保存；运行时（embyUserAuth/embyPlayback）
+ * 亦支持 accessToken 与用户会话鉴权。
+ */
+export function hasUsableServerCredentials(
+  server: Pick<EmbyMediaServer, 'apiKey' | 'accessToken' | 'username' | 'password'>,
+): boolean {
+  if (server.apiKey && server.apiKey.trim()) return true;
+  if (server.accessToken && server.accessToken.trim()) return true;
+  if (
+    server.username &&
+    server.username.trim() &&
+    server.password &&
+    server.password.trim()
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * 校验 Emby 表单（对齐遗留 doValidateSettings）
  */
 export function validateEmbyForm(form: EmbySettingsFormState): {
@@ -369,8 +391,8 @@ export function validateEmbyForm(form: EmbySettingsFormState): {
     if (!isValidServerUrl(server.url)) {
       errors.push(`媒体服务器 ${index + 1} 地址需要使用 http 或 https`);
     }
-    if (!server.apiKey.trim()) {
-      errors.push(`媒体服务器 ${index + 1} API Key 不能为空`);
+    if (!hasUsableServerCredentials(server)) {
+      errors.push(`媒体服务器 ${index + 1} 需要至少一种凭据（API Key / 访问令牌 / 用户名+密码）`);
     }
   });
 
