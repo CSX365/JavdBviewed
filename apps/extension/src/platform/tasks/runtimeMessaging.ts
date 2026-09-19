@@ -224,6 +224,14 @@ export async function waitForTaskLease(
       }
       if (lastWaitReason && isTaskLeaseAvailabilityWaitReason(lastWaitReason)) {
         waitTimeoutMs = capacityWaitTimeoutMs;
+        // S1-2 (cycle-8): hidden 页容量型拒绝立即退出等待循环，交给外层指数退避
+        // （orchestrator scheduleDeferredRetry → getBackgroundLeaseRetryDelayMs，回前台 visibilitychange 立即重跑）。
+        // S0-8 实测：video 全开 16 detail 页，hidden 页随 LEASE_PROMPT 广播按 0.2~0.7s 间隔重请求，
+        // 每页 162 次 request-lease（共 2596）+ 快照写 35MB；改后每轮退避仅 1 次请求。
+        // 前台页保持 prompt 驱动即时重试，前台 UX 不受影响。
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+          return { granted: false, waitReason: lastWaitReason };
+        }
       }
       // S2-2: 等待窗 —— 事件（LEASE_PROMPT）先醒，否则兜底间隔后重试
       await Promise.race([wake, sleep]);

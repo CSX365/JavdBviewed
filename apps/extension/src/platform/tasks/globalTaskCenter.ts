@@ -730,6 +730,11 @@ export class GlobalTaskCenter {
     const coalesceMs = opts?.bypassCoalesce ? this.leasePromptBypassCoalesceMs : this.leasePromptCoalesceMs;
     const now = Date.now();
     for (const tabId of targetTabs) {
+      // S1-2 (cycle-8): 跳过 hidden 页 —— 容量型拒绝后 hidden 页已退出内层等待循环（转外层指数退避，
+      // 回前台由页面 visibilitychange 立即重跑），向 hidden 页发 prompt 纯浪费
+      // （S0-8 实测 16 页场景 15 页 hidden 全量接收广播）；未上报可见性的 tab 按 hidden 处理，
+      // 页面侧 2s 兜底轮询保证正确性。
+      if (!this.store.isTabVisible(tabId)) continue;
       const last = this.leasePromptLastSentAt.get(tabId);
       if (last !== undefined && now - last < coalesceMs) continue;
       if (last !== undefined && now - last > GlobalTaskCenter.leasePromptStaleMs) {

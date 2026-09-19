@@ -415,4 +415,36 @@ describe('GlobalTaskCenter 事件驱动租约唤醒（S2-2）', () => {
     expect(promptCalls(handle).filter((c) => c.tabId === 2)).toHaveLength(1);
   });
 
+
+  it('S1-2 (cycle-8): 槽位释放只唤醒 visible 排队 tab，hidden 排队 tab 被跳过，回前台后恢复被唤醒', () => {
+    const center = new GlobalTaskCenter();
+    center.updateVisibility(1, true);
+    center.updateVisibility(2, true);
+    center.updateVisibility(3, false);
+    const a = center.registerTask(descriptor('translate:a', 1)).taskId;
+    const b = center.registerTask(descriptor('translate:b', 2)).taskId;
+    const c = center.registerTask(descriptor('translate:c', 3)).taskId;
+
+    expect(center.requestLease(a).granted).toBe(true);
+    expect(center.requestLease(b)).toMatchObject({ granted: false, waitReason: 'bucket:translate' });
+    expect(center.requestLease(c)).toMatchObject({ granted: false, waitReason: 'tab-hidden' });
+
+    // 释放槽位 → 只唤醒 visible 的 tab2；hidden 的 tab3 被跳过
+    // （页面侧容量型拒绝后已退出内层等待循环，转外层指数退避，回前台 visibilitychange 立即重跑）
+    center.completeTask(a);
+    expect(promptCalls(handle)).toEqual([{ tabId: 2, reason: 'task-completed' }]);
+
+    // tab3 回前台 → 收到既有的 tab-visible 唤醒，skip 不破坏该路径
+    center.updateVisibility(3, true);
+    expect(promptCalls(handle).slice(1)).toEqual([{ tabId: 3, reason: 'tab-visible' }]);
+
+    // 越过 500ms 合并窗后，再释放槽位 → 已 visible 的 tab3 能正常收到 task-completed 唤醒
+    vi.advanceTimersByTime(600);
+    expect(center.requestLease(b).granted).toBe(true);
+    center.completeTask(b);
+    expect(promptCalls(handle).filter((p) => p.tabId === 3 && p.reason === 'task-completed')).toEqual([
+      { tabId: 3, reason: 'task-completed' },
+    ]);
+  });
+
 });
