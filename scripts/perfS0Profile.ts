@@ -44,6 +44,7 @@ import {
   resolveExtensionHarnessOptions,
 } from './extensionHarness';
 import { launchRealVisibilityContext } from './realVisibilityLaunch';
+import { attachReplay, type ReplayHandle } from './perfReplay';
 import type { RealVisibilityLaunch } from './realVisibilityLaunch';
 import {
   redactDiagnosticPayload,
@@ -299,6 +300,12 @@ interface Args {
   procTimeline: boolean;
   /** S1-2: 真实 tab 可见性模式（手动启 Chrome + CDP 代理改写 focusEmulation true->false） */
   realVisibility: boolean;
+  /** 网络代理：设置后 Chrome 用 --proxy-server=<url> 出网（本机直连 CDN 路由断，测量需走代理）；不设则维持 --no-proxy-server 直连 */
+  proxy?: string;
+  /** 响应回放缓存目录（perfReplay）：设置后页面请求走缓存回放（零源站压力） */
+  replay?: string;
+  /** 与 --replay 联用：record 模式（预热，miss 放行 live 并落盘缓存）；缺省为 replay 模式（命中回放、miss 放行计数） */
+  replayRecord?: boolean;
 }
 
 interface Job {
@@ -2219,6 +2226,8 @@ async function runScenarioC(
   durations: Durations,
   failures: string[],
   realVisibility: boolean,
+  replayReady: ((page: Page) => Promise<void>) | null,
+  replayCapture: ((page: Page) => Promise<void>) | null,
 ): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; detailTimelines: DetailTimelineRec[]; variant: CPagesVariant; orchCpu: OrchTabCpuRaw[] }> {
   await context.addCookies([
     { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
@@ -2226,6 +2235,7 @@ async function runScenarioC(
 
   // --- 门卫 tab：年龄门 + 登录墙检测（与剧本 B 同口径）---
   const gate = await context.newPage();
+  if (replayReady) await replayReady(gate); // 回放：主文档导航前确保 Fetch/Network enable 已生效
   sampler.trackPage(gate);
   let gateLoaded = false;
   let loginWall = false;
@@ -2234,6 +2244,9 @@ async function runScenarioC(
     gateLoaded = true;
   } catch (error) {
     failures.push(`C: 门卫 tab 加载失败: ${errMsg(error)}`);
+  }
+  if (gateLoaded && replayCapture) {
+    await replayCapture(gate).catch(() => {}); // record 模式：主文档 HTML 兜底补录
   }
   if (gateLoaded) {
     for (let round = 0; round < 2; round += 1) {
@@ -2342,6 +2355,7 @@ async function runScenarioC(
   // --- 并发打开其余 N-1 个 tab（stagger 模拟用户连续打开）---
   for (let i = 1; i < tabCount; i += 1) {
     const page = await context.newPage();
+    if (replayReady) await replayReady(page); // 回放：主文档导航前确保 Fetch/Network enable 已生效
     sampler.trackPage(page);
     if (arm === 'enhanced' && kinds[i - 1] === 'detail') {
       const gotoStart = Date.now();
@@ -2361,6 +2375,9 @@ async function runScenarioC(
       await page.goto(urls[i], { waitUntil: 'domcontentloaded', timeout: durations.siteGotoMs });
     } catch (error) {
       failures.push(`C: tab${i + 1} 加载失败: ${errMsg(error)}`);
+    }
+    if (replayCapture) {
+      await replayCapture(page).catch(() => {}); // record 模式：主文档 HTML 兜底补录
     }
     pages.push(page);
     if (i < tabCount - 1) await sleep(durations.cStaggerMs);
@@ -2806,8 +2823,9 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
   const launchOptions = {
     headless: false,
     channel: process.env.JAVDB_EXTENSION_CHANNEL ?? 'chromium',
-    extraArgs: ['--no-proxy-server'],
+    extraArgs: args.proxy ? [`--proxy-server=${args.proxy}`] : ['--no-proxy-server'],
   };
+  if (args.proxy) log(`[${label}] 测量浏览器走代理：${args.proxy}`);
 
   // --- 测量浏览器（每 run 全新启动） ---
   // 注意：不用 chrome.runtime.reload()（--load-extension 场景下 reload 后 SW 不再复活、
@@ -2826,6 +2844,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
   }
   let sampler: RunSampler | null = null;
   let runError: string | null = null;
+  let replay: ReplayHandle | null = null;
   try {
     const extensionId = await readExtensionId(context, 30_000);
     const sw = await waitForExtensionServiceWorker(context, 30_000);
@@ -2839,6 +2858,18 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
       throw new Error(`${job.arm} 臂设置读回不一致，对照组无效${args.disableVideo ? '（disableVideo）' : ''}`);
     }
     context.addInitScript(PAGE_HOOK_SRC);
+    if (args.replay) {
+      const replayMode = args.replayRecord ? 'record' : 'replay';
+      replay = await attachReplay(context, {
+        cacheDir: args.replay,
+        mode: replayMode,
+        log: (m) => log(`[${label}] ${m}`),
+      });
+      log(`[${label}] 回放已挂载 dir=${args.replay} mode=${replayMode}`);
+    }
+    const replayH = replay;
+    const replayReady = replayH ? (p: Page) => replayH.awaitReady(p) : null;
+    const replayCapture = replayH && args.replayRecord ? (p: Page) => replayH.captureDocument(p) : null;
     if (args.featuresOff && args.featuresOff.length > 0) {
       log(`[${label}] B6 业务点关闭：${args.featuresOff.join('+')}`);
     }
@@ -2909,6 +2940,8 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
           durations,
           failures,
           args.realVisibility,
+          replayReady,
+          replayCapture,
         );
         tInteractiveMs = result.tInteractiveMs;
         if (result.perTab.length > 0) perTab = result.perTab;
@@ -3048,6 +3081,18 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
       log(`[${label}] 归因 sidecar 已落盘 ${sidecarPath}`);
     }
   } finally {
+    // 回放统计落盘 + 拆除（无论成功/异常）
+    if (replay) {
+      try {
+        const rs = replay.stats();
+        log(`[${label}] 回放统计: 拦截=${rs.total.intercepted} 命中=${rs.total.hits} miss=${rs.total.misses} 记录=${rs.total.recorded} 记录失败=${rs.total.recordFail} 回放字节=${rs.total.hitBytes} 记录字节=${rs.total.recordBytes}`);
+        if (rs.total.missedUrls.length > 0) log(`[${label}] 回放 miss URL(前10): ${rs.total.missedUrls.slice(0, 10).join(' | ')}`);
+        writeFileSync(path.join(args.outDir, `${label}-replay-stats.json`), `${JSON.stringify(rs, null, 2)}\n`, 'utf8');
+      } catch (e) {
+        log(`[${label}] 回放统计落盘失败（忽略）: ${String(e).slice(0, 100)}`);
+      }
+      await replay.close().catch(() => {});
+    }
     // 兜底：无论成功/异常都确保采样循环退出（避免僵尸 node 进程），再关浏览器
     if (sampler) await sampler.dispose(5_000);
     if (realVis) {
@@ -3123,6 +3168,7 @@ function parseArgs(argv: string[]): Args {
     cdpTrace: false,
     procTimeline: false,
     realVisibility: false,
+    proxy: undefined,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -3191,6 +3237,15 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--real-visibility':
         args.realVisibility = true;
+        break;
+      case '--proxy':
+        args.proxy = next();
+        break;
+      case '--replay':
+        args.replay = path.resolve(next());
+        break;
+      case '--replay-record':
+        args.replayRecord = true;
         break;
       default:
         throw new Error(`未知参数：${token}`);
