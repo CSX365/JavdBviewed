@@ -6,7 +6,8 @@
 // src/features/webdavSync/background/controller.ts
 // WebDAV 后台装配层。
 
-import { getSettings, saveSettings } from '../../../utils/storage';
+import { STORAGE_KEYS } from '../../../utils/config';
+import { getSettings, getValue, saveSettings } from '../../../utils/storage';
 import {
   getClientFilePath,
   normalizeWebDavBaseUrl,
@@ -83,7 +84,11 @@ function bgLog(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string, data
 let webdavAutoUploadInProgress = false;
 
 async function ensureWebDAVClientIdentity(): Promise<any> {
-  return ensureWebDAVClientIdentityCore({ getSettings, saveSettings });
+  return ensureWebDAVClientIdentityCore({
+    getSettings,
+    saveSettings,
+    readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined),
+  });
 }
 
 function readKnownDevices(value: unknown): WebDAVKnownDevice[] {

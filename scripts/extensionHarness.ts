@@ -555,14 +555,61 @@ export function extensionPageUrl(extensionId: string, pagePath: string): string 
  * 用于测试前置准备（如预先开启某个功能开关）。
  * 相比在 dashboard 页内 evaluate，worker 写入与页面读取共享同一
  * extension storage 分区，干净 profile 下也能稳定生效。
+ *
+ * 稳定性保障：seed 后轮询读回校验（深度子集比较），若被后台并发写覆盖
+ * （典型：SW 启动期的 settings 初始化写）则重新 seed，直到稳定或超时。
+ * 超时直接抛错——seed 不稳定意味着被测前置条件不成立，不应带病跑用例。
  */
+const SEED_STABILITY_TIMEOUT_MS = 10_000;
+const SEED_STABILITY_POLL_MS = 200;
+
+async function seedStorageOnce(worker: Worker, storage: Record<string, unknown>): Promise<void> {
+  await worker.evaluate((data) => chrome.storage.local.set(data), storage);
+}
+
+async function isSeedStable(worker: Worker, storage: Record<string, unknown>): Promise<boolean> {
+  return worker.evaluate((expected: Record<string, unknown>) => {
+    const contains = (stored: unknown, exp: unknown): boolean => {
+      if (exp === null || typeof exp !== 'object') return stored === exp;
+      if (Array.isArray(exp)) {
+        if (!Array.isArray(stored) || stored.length !== exp.length) return false;
+        return exp.every((value, index) => contains(stored[index], value));
+      }
+      if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) return false;
+      const expRecord = exp as Record<string, unknown>;
+      const storedRecord = stored as Record<string, unknown>;
+      return Object.keys(expRecord).every((key) => contains(storedRecord[key], expRecord[key]));
+    };
+    return new Promise<boolean>((resolve) => {
+      try {
+        chrome.storage.local.get(Object.keys(expected), (stored) => {
+          resolve(Object.keys(expected).every((key) => contains(stored[key], expected[key])));
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+  }, storage);
+}
+
 export async function seedExtensionStorage(
   context: BrowserContext,
   storage: Record<string, unknown>,
 ): Promise<void> {
   const worker = context.serviceWorkers().find((candidate) => isExtensionWorker(candidate))
     ?? await context.waitForEvent('serviceworker', { timeout: 15_000 });
-  await worker.evaluate((data) => chrome.storage.local.set(data), storage);
+  const deadline = Date.now() + SEED_STABILITY_TIMEOUT_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    await seedStorageOnce(worker, storage);
+    if (await isSeedStable(worker, storage)) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `seedExtensionStorage: seed 被后台并发写反复覆盖，${SEED_STABILITY_TIMEOUT_MS}ms 内未稳定（第 ${attempt} 次重试后）。`
+        + '请检查 SW 启动路径是否存在全量 settings 写者。',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, SEED_STABILITY_POLL_MS));
+  }
 }
 
 async function rebuildChromeSnapshot(input: {

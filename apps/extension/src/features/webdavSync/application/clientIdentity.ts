@@ -8,6 +8,13 @@ import type { WebDAVClientProfile } from '../domain/types';
 export interface WebDAVSettingsAdapter {
   getSettings: () => Promise<any>;
   saveSettings: (settings: any) => Promise<void>;
+  /**
+   * 原始读取 settings 存储值（不合并默认值）。
+   * 可选：提供后，身份补写只把自身 delta 合并到最新原始值上写回，
+   * 避免 SW 启动窗口内用全默认值实例覆盖并发写入的其他节（读-改-写竞态）。
+   * 未提供时保持旧行为（merged 视图全量写回）。
+   */
+  readRawSettings?: () => Promise<Partial<any> | null | undefined>;
 }
 
 const UUID_BYTE_LENGTH = 16;
@@ -87,36 +94,66 @@ export function sanitizeDeviceLabel(value: string): string {
   return trimmed || detectBrowserName();
 }
 
-export async function ensureWebDAVClientIdentity(adapter: WebDAVSettingsAdapter): Promise<any> {
-  const settings = await adapter.getSettings();
-  const nextSettings = { ...settings, webdav: { ...(settings.webdav || {}) } } as any;
-  let changed = false;
+type IdentityAnyRecord = Record<string, any>;
 
-  if (!nextSettings.webdav.clientId) {
-    nextSettings.webdav.clientId = createUuidLike();
-    changed = true;
-  }
-  if (!nextSettings.webdav.clientInstalledAt) {
-    nextSettings.webdav.clientInstalledAt = new Date().toISOString();
-    changed = true;
-  }
+function readWebDAVSection(base: IdentityAnyRecord | null | undefined): IdentityAnyRecord {
+  const section = (base as IdentityAnyRecord | null | undefined)?.webdav;
+  return section && typeof section === 'object' && !Array.isArray(section) ? (section as IdentityAnyRecord) : {};
+}
 
+function buildMissingIdentityDelta(webdav: IdentityAnyRecord): IdentityAnyRecord | null {
+  const delta: IdentityAnyRecord = {};
+  if (!webdav.clientId) delta.clientId = createUuidLike();
+  if (!webdav.clientInstalledAt) delta.clientInstalledAt = new Date().toISOString();
   const detectedBrowser = detectBrowserName();
-  if (!nextSettings.webdav.browserName) {
-    nextSettings.webdav.browserName = detectedBrowser;
-    changed = true;
+  if (!webdav.browserName) delta.browserName = detectedBrowser;
+  if (!webdav.deviceLabel) delta.deviceLabel = detectedBrowser;
+  return Object.keys(delta).length > 0 ? delta : null;
+}
+
+async function readRawSettingsSafe(adapter: WebDAVSettingsAdapter): Promise<IdentityAnyRecord | null | undefined> {
+  if (typeof adapter.readRawSettings !== 'function') return undefined;
+  try {
+    const raw = await adapter.readRawSettings();
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as IdentityAnyRecord) : null;
+  } catch {
+    // 原始读失败时退回旧路径（merged 视图全量写回），保证可用性
+    return undefined;
+  }
+}
+
+/**
+ * 补全 WebDAV 客户端身份字段（clientId/clientInstalledAt/browserName/deviceLabel）。
+ *
+ * 竞态安全说明（修复 SW 启动期全默认值覆盖并发写入的问题）：
+ * - “缺哪些字段”与写回内容都基于原始存储值（readRawSettings），
+ *   绝不把 getSettings() 的全默认值实例写回（那会覆盖启动窗口内并发写入的其他节）；
+ * - 写回前立即重读一次原始值，把读-改-写窗口压缩到最小；
+ * - 原始读不可用（adapter 未实现 / 抛错）时保持旧行为。
+ */
+export async function ensureWebDAVClientIdentity(adapter: WebDAVSettingsAdapter): Promise<any> {
+  const rawBase = await readRawSettingsSafe(adapter);
+  const hasRaw = rawBase !== undefined;
+  const base = hasRaw ? (rawBase ?? {}) : ((await adapter.getSettings()) as IdentityAnyRecord);
+
+  const delta = buildMissingIdentityDelta(readWebDAVSection(base));
+  if (!delta) {
+    return hasRaw ? adapter.getSettings() : base;
   }
 
-  if (!nextSettings.webdav.deviceLabel) {
-    nextSettings.webdav.deviceLabel = detectedBrowser;
-    changed = true;
+  // 写回前立即重读原始值：首读之后落盘的并发写入（如用户/测试 seed）也能被保留
+  let latestBase: IdentityAnyRecord = base;
+  if (hasRaw) {
+    const freshRaw = await readRawSettingsSafe(adapter);
+    if (freshRaw !== undefined && freshRaw !== null) latestBase = freshRaw;
   }
 
-  if (changed) {
-    await adapter.saveSettings(nextSettings);
-    return nextSettings;
-  }
-  return settings;
+  const nextSettings: IdentityAnyRecord = {
+    ...latestBase,
+    webdav: { ...readWebDAVSection(latestBase), ...delta },
+  };
+  await adapter.saveSettings(nextSettings);
+  return hasRaw ? adapter.getSettings() : nextSettings;
 }
 
 export function getWebDAVClientProfile(settings: any, overrides?: Partial<WebDAVClientProfile>): WebDAVClientProfile {

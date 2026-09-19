@@ -25,7 +25,8 @@ import {
   handleTelemetryRuntimeMessage,
   initializeTelemetryReporter,
 } from '../../features/telemetry';
-import { getSettings, saveSettings } from '../../utils/storage';
+import { STORAGE_KEYS } from '../../utils/config';
+import { getSettings, getValue, saveSettings } from '../../utils/storage';
 import { initializeBackgroundAlarmWiring } from './alarmRouter';
 import { registerDbMessageRouter } from './dbMessageRouter';
 import {
@@ -62,7 +63,12 @@ if (shouldRunBootstrapStep('migrations')) ensureMigrationsStart();
 if (shouldRunBootstrapStep('release-announcement')) registerReleaseAnnouncementEvents();
 if (shouldRunBootstrapStep('telemetry')) {
   initializeTelemetryAfterClientIdentity({
-    ensureClientIdentity: () => ensureWebDAVClientIdentity({ getSettings, saveSettings }),
+    ensureClientIdentity: () => ensureWebDAVClientIdentity({
+      getSettings,
+      saveSettings,
+      // 竞态安全：身份补写基于原始存储值，避免启动期全默认值覆盖并发写入（如测试 seed）
+      readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined),
+    }),
     initializeTelemetry: initializeTelemetryReporter,
     logWarning: (message, context) => console.warn(message, context),
   }).catch(() => {});

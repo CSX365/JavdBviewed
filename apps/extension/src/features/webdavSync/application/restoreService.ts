@@ -121,7 +121,11 @@ const GENERIC_IDB_RESTORE_KEY_FIELDS: Record<string, string> = {
 };
 
 async function getCurrentSettingsWithIdentity(): Promise<any> {
-  return ensureWebDAVClientIdentity({ getSettings, saveSettings });
+  return ensureWebDAVClientIdentity({
+    getSettings,
+    saveSettings,
+    readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined),
+  });
 }
 
 export async function applyImportDataDirect(importData: any, options?: RestoreApplyOptions, serviceOptions: RestoreServiceOptions = {}): Promise<{ success: boolean; error?: string; summary?: any }> {
