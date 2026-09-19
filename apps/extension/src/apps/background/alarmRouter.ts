@@ -26,6 +26,7 @@ import {
   handleDrive115MediaLibraryResumeAlarm,
 } from '../../features/drive115/mediaLibrary';
 import { viewedPurgeExpired, actorsPurgeExpired } from '../../platform/storage/indexedDb';
+import { actorIndexSnapshot } from './actorIndexSnapshot';
 import {
   ALARM_DIAGNOSTICS_STORAGE_KEY,
   getAlarmNextScheduledAt,
@@ -76,6 +77,9 @@ function registerRecycleBinCleanupAlarm(): void {
 async function handleRecycleBinCleanup(): Promise<void> {
   const purgedVideos = await viewedPurgeExpired(THIRTY_DAYS_MS).catch(() => 0);
   const purgedActors = await actorsPurgeExpired(THIRTY_DAYS_MS).catch(() => 0);
+  if (purgedActors > 0) {
+    actorIndexSnapshot.invalidate();
+  }
   if (purgedVideos > 0 || purgedActors > 0) {
     console.log(`[RecycleBin] 清理过期记录: 番号 ${purgedVideos} 条, 演员 ${purgedActors} 条`);
   }

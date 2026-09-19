@@ -3,7 +3,7 @@
  * @description actorWatermark
  * @module features/listEnhancement
  */
-import type { ActorRecord } from '../../../types';
+import type { ActorIndexRecord } from '../../../types';
 
 export interface ActorSubscriptionRecord {
   actorId: string;
@@ -11,26 +11,26 @@ export interface ActorSubscriptionRecord {
 
 export interface ActorDataCacheDependencies {
   ttlMs?: number;
-  getAllActors: () => Promise<ActorRecord[]>;
+  getAllActors: () => Promise<ActorIndexRecord[]>;
   getSubscriptions: () => Promise<ActorSubscriptionRecord[]>;
   logger?: (...args: any[]) => void;
 }
 
 export interface ActorDataCache {
-  ensureActorIndex: () => Promise<Map<string, ActorRecord>>;
+  ensureActorIndex: () => Promise<Map<string, ActorIndexRecord>>;
   ensureSubscriptions: () => Promise<Set<string>>;
-  getActorById: (id: string) => Promise<ActorRecord | null>;
+  getActorById: (id: string) => Promise<ActorIndexRecord | null>;
   /** 同步读取已加载的演员索引（未加载返回 null）。 */
-  getActorByIdSync: (id: string) => ActorRecord | null;
+  getActorByIdSync: (id: string) => ActorIndexRecord | null;
   clear: () => void;
 }
 
 export interface ActorLookupDependencies {
-  getActorById: (id: string) => Promise<ActorRecord | null | undefined>;
+  getActorById: (id: string) => Promise<ActorIndexRecord | null | undefined>;
 }
 
 export interface ActorWatermarkBadgeInput {
-  actor: ActorRecord;
+  actor: ActorIndexRecord;
   isBlack: boolean;
   isSub: boolean;
 }
@@ -46,8 +46,8 @@ const MAX_WATERMARK_ACTORS = 6;
 const WATERMARK_VISIBLE_BADGES = 4;
 
 export function createActorDataCache(deps: ActorDataCacheDependencies): ActorDataCache {
-  let actorIndex: Map<string, ActorRecord> | null = null;
-  let actorIdIndex: Map<string, ActorRecord> | null = null;
+  let actorIndex: Map<string, ActorIndexRecord> | null = null;
+  let actorIdIndex: Map<string, ActorIndexRecord> | null = null;
   let subscribedActorIds: Set<string> | null = null;
   let loadingActorIndex = false;
   let loadingSubscriptions = false;
@@ -58,7 +58,7 @@ export function createActorDataCache(deps: ActorDataCacheDependencies): ActorDat
   const logger = (...args: any[]) => deps.logger?.(...args);
 
   return {
-    async ensureActorIndex(): Promise<Map<string, ActorRecord>> {
+    async ensureActorIndex(): Promise<Map<string, ActorIndexRecord>> {
       const now = Date.now();
       const isCacheExpired = actorIndexTimestamp > 0 && (now - actorIndexTimestamp) > ttlMs;
 
@@ -129,12 +129,12 @@ export function createActorDataCache(deps: ActorDataCacheDependencies): ActorDat
       return subscribedActorIds;
     },
 
-    async getActorById(id: string): Promise<ActorRecord | null> {
+    async getActorById(id: string): Promise<ActorIndexRecord | null> {
       await this.ensureActorIndex();
       return actorIdIndex?.get(id) ?? null;
     },
 
-    getActorByIdSync(id: string): ActorRecord | null {
+    getActorByIdSync(id: string): ActorIndexRecord | null {
       return actorIdIndex?.get(id) ?? null;
     },
 
@@ -151,8 +151,8 @@ export function createActorDataCache(deps: ActorDataCacheDependencies): ActorDat
   };
 }
 
-export function buildActorIndex(actors: ActorRecord[]): Map<string, ActorRecord> {
-  const index = new Map<string, ActorRecord>();
+export function buildActorIndex(actors: ActorIndexRecord[]): Map<string, ActorIndexRecord> {
+  const index = new Map<string, ActorIndexRecord>();
   actors.forEach(actor => {
     pushActorIndexKey(index, actor.name, actor);
     (actor.aliases || []).forEach(alias => pushActorIndexKey(index, alias, actor));
@@ -176,7 +176,7 @@ export function extractActorIdsFromListItem(item: HTMLElement): Set<string> {
 export async function extractActorsFromListItem(
   item: HTMLElement,
   deps: ActorLookupDependencies,
-): Promise<ActorRecord[]> {
+): Promise<ActorIndexRecord[]> {
   const ids = extractActorIdsFromListItem(item);
   if (ids.size === 0) {
     return [];
@@ -186,7 +186,7 @@ export async function extractActorsFromListItem(
     const list = await Promise.all(
       Array.from(ids).slice(0, MAX_DOM_ACTORS).map(id => deps.getActorById(id).catch(() => null)),
     );
-    return list.filter(Boolean) as ActorRecord[];
+    return list.filter(Boolean) as ActorIndexRecord[];
   } catch {
     return [];
   }
@@ -244,7 +244,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
   }
 }
 
-function pushActorIndexKey(index: Map<string, ActorRecord>, key: string | undefined, actor: ActorRecord): void {
+function pushActorIndexKey(index: Map<string, ActorIndexRecord>, key: string | undefined, actor: ActorIndexRecord): void {
   const normalized = (key || '').trim().toLowerCase();
   if (!normalized || index.has(normalized)) {
     return;

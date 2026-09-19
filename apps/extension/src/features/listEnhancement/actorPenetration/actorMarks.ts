@@ -9,12 +9,12 @@
  * 判定为纯函数：输入演员记录与订阅集合，输出标识（或 undefined），不触碰 DOM、不读 chrome。
  * @module features/listEnhancement/actorPenetration
  */
-import type { ActorRecord } from '../../../types';
+import type { ActorIndexRecord } from '../../../types';
 import type { ActorLinkMark } from './renderActorRow';
 
 export interface ActorMarkLookup {
   /** 按 id 查本地演员记录（不存在返回 null）。 */
-  getActorById: (id: string) => Promise<ActorRecord | null | undefined>;
+  getActorById: (id: string) => Promise<ActorIndexRecord | null | undefined>;
   /** 已订阅的演员 id 集合。 */
   subscribedActorIds: Set<string>;
 }
@@ -28,7 +28,7 @@ export interface ActorMarkLookup {
  */
 export function resolveActorLinkMark(
   actorId: string,
-  record: ActorRecord | null | undefined,
+  record: ActorIndexRecord | null | undefined,
   lookup: Pick<ActorMarkLookup, 'subscribedActorIds'>,
 ): ActorLinkMark | undefined {
   const isBlacklisted = record?.blacklisted === true;
@@ -58,7 +58,7 @@ export async function resolveActorMarkFor(
   lookup: ActorMarkLookup,
 ): Promise<ActorLinkMark | undefined> {
   if (!actorId) return undefined;
-  let record: ActorRecord | null | undefined;
+  let record: ActorIndexRecord | null | undefined;
   try {
     record = await lookup.getActorById(actorId);
   } catch {

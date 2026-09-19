@@ -54,6 +54,18 @@ export interface ActorSearchResult {
   profileUrl: string;
 }
 
+/**
+ * 演员索引精简记录 —— 内容侧列表增强（匹配/水印/名称标识/按演员隐藏）所需的完整字段集合。
+ * 由 SW 侧 DB:ACTORS_QUERY{sharedIndex} 共享快照投影而来，避免每个列表 tab
+ * 全量拉取 ActorRecord（wikiData/syncInfo 等大字段在内容侧从不使用）。
+ */
+export interface ActorIndexRecord {
+  id: string;
+  name: string;
+  aliases: string[];
+  blacklisted?: boolean;
+}
+
 /** 演员分页搜索结果 */
 export interface ActorPagedSearchResult {
   actors: ActorRecord[];

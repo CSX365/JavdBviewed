@@ -7,6 +7,7 @@
 // 抽离 DB 相关消息路由
 
 import { initDB, viewedPut as idbViewedPut, viewedBulkPut as idbViewedBulkPut, viewedGet as idbViewedGet, viewedStatusGetMany as idbViewedStatusGetMany, viewedCount as idbViewedCount, viewedPage as idbViewedPage, viewedCountByStatus as idbViewedCountByStatus, viewedGetAll as idbViewedGetAll, viewedStats as idbViewedStats, viewedDelete as idbViewedDelete, viewedBulkDelete as idbViewedBulkDelete, viewedQuery as idbViewedQuery, viewedExportJSON as idbViewedExportJSON, viewedCleanInjectedSourceTags as idbViewedCleanInjectedSourceTags, viewedRestore as idbViewedRestore, viewedBulkRestore as idbViewedBulkRestore, viewedPurge as idbViewedPurge, viewedBulkPurge as idbViewedBulkPurge, viewedQueryRecycleBin as idbViewedQueryRecycleBin, viewedPurgeExpired as idbViewedPurgeExpired, magnetsUpsertMany as idbMagnetsUpsertMany, magnetsQuery as idbMagnetsQuery, magnetsClearAll as idbMagnetsClearAll, magnetsClearExpired as idbMagnetsClearExpired, actorsPut as idbActorsPut, actorsBulkPut as idbActorsBulkPut, actorsGet as idbActorsGet, actorsDelete as idbActorsDelete, actorsQuery as idbActorsQuery, actorsStats as idbActorsStats, actorsExportJSON as idbActorsExportJSON, actorsRestore as idbActorsRestore, actorsBulkRestore as idbActorsBulkRestore, actorsPurge as idbActorsPurge, actorsBulkPurge as idbActorsBulkPurge, actorsQueryRecycleBin as idbActorsQueryRecycleBin, actorsPurgeExpired as idbActorsPurgeExpired, newWorksPut as idbNewWorksPut, newWorksBulkPut as idbNewWorksBulkPut, newWorksDelete as idbNewWorksDelete, newWorksGet as idbNewWorksGet, newWorksGetAll as idbNewWorksGetAll, newWorksQuery as idbNewWorksQuery, newWorksStats as idbNewWorksStats, newWorksExportJSON as idbNewWorksExportJSON, listsBulkPut as idbListsBulkPut, listsPut as idbListsPut, listsDelete as idbListsDelete, listsGetAll as idbListsGetAll, listsGetAllNormalized as idbListsGetAllNormalized, listsClear as idbListsClear, viewedPatchListIds as idbViewedPatchListIds, viewedBulkPatchListIds as idbViewedBulkPatchListIds, newWorksDailyStatRefreshToday as idbNewWorksDailyStatRefreshToday } from '../../platform/storage/indexedDb';
+import { actorIndexSnapshot } from './actorIndexSnapshot';
 import { handleInsightsMessage } from './dbInsightsMessageHandlers';
 import { handleLogMessage } from './dbLogMessageHandlers';
 import { handleMagnetPushLogMessage } from './dbMagnetPushLogMessageHandlers';
@@ -134,13 +135,13 @@ export function registerDbMessageRouter(): void {
       // actors
       if (message.type === 'DB:ACTORS_PUT') {
         const record = message?.payload?.record;
-        idbActorsPut(record).then(() => sendResponse({ success: true }))
+        idbActorsPut(record).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors put failed' }));
         return true;
       }
       if (message.type === 'DB:ACTORS_BULK_PUT') {
         const records = message?.payload?.records || [];
-        idbActorsBulkPut(records).then(() => sendResponse({ success: true }))
+        idbActorsBulkPut(records).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors bulkPut failed' }));
         return true;
       }
@@ -152,32 +153,32 @@ export function registerDbMessageRouter(): void {
       }
       if (message.type === 'DB:ACTORS_DELETE') {
         const id = message?.payload?.id;
-        idbActorsDelete(id).then(() => sendResponse({ success: true }))
+        idbActorsDelete(id).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors delete failed' }));
         return true;
       }
       // 演员库回收站
       if (message.type === 'DB:ACTORS_RESTORE') {
         const id = message?.payload?.id;
-        idbActorsRestore(id).then(() => sendResponse({ success: true }))
+        idbActorsRestore(id).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors restore failed' }));
         return true;
       }
       if (message.type === 'DB:ACTORS_BULK_RESTORE') {
         const ids = message?.payload?.ids || [];
-        idbActorsBulkRestore(ids).then(() => sendResponse({ success: true }))
+        idbActorsBulkRestore(ids).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors bulk restore failed' }));
         return true;
       }
       if (message.type === 'DB:ACTORS_PURGE') {
         const id = message?.payload?.id;
-        idbActorsPurge(id).then(() => sendResponse({ success: true }))
+        idbActorsPurge(id).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors purge failed' }));
         return true;
       }
       if (message.type === 'DB:ACTORS_BULK_PURGE') {
         const ids = message?.payload?.ids || [];
-        idbActorsBulkPurge(ids).then(() => sendResponse({ success: true }))
+        idbActorsBulkPurge(ids).then(() => { actorIndexSnapshot.invalidate(); sendResponse({ success: true }); })
           .catch((e) => sendResponse({ success: false, error: e?.message || 'actors bulk purge failed' }));
         return true;
       }
@@ -189,8 +190,15 @@ export function registerDbMessageRouter(): void {
       }
       if (message.type === 'DB:ACTORS_QUERY') {
         const params = message?.payload || {};
-        idbActorsQuery(params).then((data) => sendResponse({ success: true, ...data }))
-          .catch((e) => sendResponse({ success: false, error: e?.message || 'actors query failed' }));
+        if (params?.sharedIndex === true) {
+          // 列表增强全量索引：走共享快照（多 tab 合并一次 IDB 读 + slim 投影）
+          actorIndexSnapshot.get()
+            .then(({ items, total }) => sendResponse({ success: true, items, total }))
+            .catch((e) => sendResponse({ success: false, error: e?.message || 'actors index snapshot failed' }));
+        } else {
+          idbActorsQuery(params).then((data) => sendResponse({ success: true, ...data }))
+            .catch((e) => sendResponse({ success: false, error: e?.message || 'actors query failed' }));
+        }
         return true;
       }
       if (message.type === 'DB:ACTORS_STATS') {

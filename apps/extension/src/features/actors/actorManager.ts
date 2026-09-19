@@ -8,8 +8,8 @@
 
 import { getValue, setValue } from '../../utils/storage';
 import { STORAGE_KEYS } from '../../utils/config';
-import type { ActorRecord, ActorPagedSearchResult } from '../../types';
-import { dbActorsQuery, dbActorsGet, dbActorsPut, dbActorsDelete, dbActorsBulkPut, dbActorsBulkPurge, dbActorsStats, type ActorsQueryParams } from '../../dashboard/dbClient';
+import type { ActorIndexRecord, ActorRecord, ActorPagedSearchResult } from '../../types';
+import { dbActorsQuery, dbActorsQueryIndex, dbActorsGet, dbActorsPut, dbActorsDelete, dbActorsBulkPut, dbActorsBulkPurge, dbActorsStats, type ActorsQueryParams } from '../../dashboard/dbClient';
 
 export class ActorManager {
     private cache: Map<string, ActorRecord> = new Map();
@@ -53,6 +53,21 @@ export class ActorManager {
         } catch {}
         // 回退：内存缓存
         return Array.from(this.cache.values());
+    }
+
+    /** 全量 slim 演员索引（SW 共享快照）：多 tab 合并一次 IDB 读，替代 per-tab 全量拉取。 */
+    async getAllActorsIndex(): Promise<ActorIndexRecord[]> {
+        try {
+            const { items } = await dbActorsQueryIndex();
+            if (Array.isArray(items) && items.length > 0) return items;
+        } catch {}
+        await this.initialize();
+        return Array.from(this.cache.values()).map(a => ({
+            id: a.id,
+            name: a.name,
+            aliases: a.aliases ? [...a.aliases] : [],
+            blacklisted: a.blacklisted === true,
+        }));
     }
 
     /**

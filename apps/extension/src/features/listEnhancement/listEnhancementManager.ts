@@ -138,7 +138,7 @@ class ListEnhancementManager {
     onActorIndexCleared: () => this.invalidateActorNameMarkPrep(),
   });
   private readonly actorDataCache = createActorDataCache({
-    getAllActors: () => actorManager.getAllActors(),
+    getAllActors: () => actorManager.getAllActorsIndex(),
     getSubscriptions: () => newWorksManager.getSubscriptions(),
     logger: (...args) => log(...args),
   });

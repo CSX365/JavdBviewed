@@ -1873,6 +1873,12 @@ export async function actorsPurgeExpired(expiryMs: number): Promise<number> {
   return expired.length;
 }
 
+/** 全量读取演员库（不做过滤/排序）：供 SW 侧共享快照等场景使用。 */
+export async function actorsGetAllRecords(): Promise<ActorRecord[]> {
+  const db = await initDB();
+  return db.getAll('actors');
+}
+
 export async function actorsQuery(params: ActorsQueryParams): Promise<{ items: ActorRecord[]; total: number; }> {
   const { query = '', gender, category, blacklist = 'all', sortBy = 'name', order = 'asc', offset = 0, limit = 20 } = params || {} as any;
   const db = await initDB();

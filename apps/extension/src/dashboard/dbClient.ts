@@ -3,7 +3,7 @@
 
 import type { LogEntry, VideoRecord, ListRecord, NewWorkRecord } from '../types';
 import type { ViewsDaily, ReportMonthly } from '../types/insights';
-import type { ActorRecord } from '../types';
+import type { ActorIndexRecord, ActorRecord } from '../types';
 import { readLocalViewedStatuses } from './localViewedStatus';
 
 export interface MagnetsQueryParams {
@@ -394,6 +394,8 @@ export interface ActorsQueryParams {
   order?: 'asc' | 'desc';
   offset?: number;
   limit?: number;
+  /** 走 SW 共享 slim 索引快照（仅 id/name/aliases/blacklisted），内容侧列表用 */
+  sharedIndex?: boolean;
 }
 
 export async function dbActorsPut(record: ActorRecord): Promise<void> {
@@ -439,6 +441,13 @@ export async function dbActorsQueryRecycleBin(params?: { offset?: number; limit?
 
 export async function dbActorsQuery(params: ActorsQueryParams): Promise<{ items: ActorRecord[]; total: number }>{
   const resp = await sendMessage<{ success: true; items: ActorRecord[]; total: number }>('DB:ACTORS_QUERY', params);
+  // @ts-ignore
+  return { items: resp.items || [], total: resp.total || 0 };
+}
+
+/** 全量 slim 演员索引：SW 侧共享快照，多 tab 合并为一次 IDB 全表读 */
+export async function dbActorsQueryIndex(): Promise<{ items: ActorIndexRecord[]; total: number }> {
+  const resp = await sendMessage<{ success: true; items: ActorIndexRecord[]; total: number }>('DB:ACTORS_QUERY', { sharedIndex: true });
   // @ts-ignore
   return { items: resp.items || [], total: resp.total || 0 };
 }

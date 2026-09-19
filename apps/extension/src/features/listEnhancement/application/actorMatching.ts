@@ -3,7 +3,7 @@
  * @description actorMatching
  * @module features/listEnhancement
  */
-import type { ActorRecord } from '../../../types';
+import type { ActorIndexRecord } from '../../../types';
 
 export function normalizeActorMatchText(value: string): string {
   return (value || '')
@@ -12,7 +12,7 @@ export function normalizeActorMatchText(value: string): string {
     .trim();
 }
 
-export function matchActorsFromTitle(title: string, actorIndex: Map<string, ActorRecord>): ActorRecord[] {
+export function matchActorsFromTitle(title: string, actorIndex: Map<string, ActorIndexRecord>): ActorIndexRecord[] {
   const raw = title || '';
   const norm = normalizeActorMatchText(raw).toLowerCase();
   if (!norm) {
@@ -20,7 +20,7 @@ export function matchActorsFromTitle(title: string, actorIndex: Map<string, Acto
   }
 
   const tokens = norm.split(' ').filter(Boolean);
-  const results: ActorRecord[] = [];
+  const results: ActorIndexRecord[] = [];
   const seen = new Set<string>();
 
   const maxBackTokens = Math.min(tokens.length, 6);

@@ -3,7 +3,7 @@
  * @description actorHiding
  * @module features/listEnhancement
  */
-import type { ActorRecord } from '../../../types';
+import type { ActorIndexRecord } from '../../../types';
 
 export type ActorHidingReason = 'ACTOR_BLACKLIST' | 'ACTOR_NOT_FAVORITED' | 'ACTOR_UNRECOGNIZED';
 
@@ -13,7 +13,7 @@ export interface ActorHidingDecisionInput {
   hideUnrecognized: boolean;
   treatSubscribedAsFavorited: boolean;
   domActorIds: Set<string>;
-  actors: ActorRecord[];
+  actors: ActorIndexRecord[];
   subscribedActorIds: Set<string>;
   actorIndexSize: number;
 }
@@ -69,7 +69,7 @@ function isNonFavoritedMatch(input: ActorHidingDecisionInput): boolean {
 }
 
 function hasAnyFavoritedActor(
-  actors: ActorRecord[],
+  actors: ActorIndexRecord[],
   treatSubscribedAsFavorited: boolean,
   subscribedActorIds: Set<string>,
 ): boolean {

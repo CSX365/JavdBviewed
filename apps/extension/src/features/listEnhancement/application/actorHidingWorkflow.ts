@@ -3,7 +3,7 @@
  * @description actorHidingWorkflow
  * @module features/listEnhancement
  */
-import type { ActorRecord } from '../../../types';
+import type { ActorIndexRecord } from '../../../types';
 import {
   decideActorHiding,
   type ActorHidingReason,
@@ -35,9 +35,9 @@ export interface ApplyActorBasedHidingOptions {
   hideByNonFavorited: boolean;
   hideUnrecognized: boolean;
   treatSubscribedAsFavorited: boolean;
-  ensureActorIndex: () => Promise<Map<string, ActorRecord>>;
+  ensureActorIndex: () => Promise<Map<string, ActorIndexRecord>>;
   ensureSubscriptions: () => Promise<Set<string>>;
-  getActorById: (id: string) => Promise<ActorRecord | null | undefined>;
+  getActorById: (id: string) => Promise<ActorIndexRecord | null | undefined>;
   hideItemByActor: (item: HTMLElement, reason: ActorHidingReason) => void;
   clearActorOnlyHiding: (item: HTMLElement) => void;
   logger?: (...args: any[]) => void;
@@ -75,7 +75,7 @@ export async function applyActorBasedHiding(options: ApplyActorBasedHidingOption
     const allActorIds = extractActorIdsFromListItem(item);
     debugLog(`[ActorHiding] ${videoInfo.code}: Found ${allActorIds.size} actor IDs in DOM: ${Array.from(allActorIds).join(', ')}`);
 
-    let actorRecords: ActorRecord[] = [];
+    let actorRecords: ActorIndexRecord[] = [];
     if (allActorIds.size > 0) {
       try {
         actorRecords = await extractActorsFromListItem(item, {
