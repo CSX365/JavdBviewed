@@ -5,9 +5,12 @@
  */
 import { chromium, type BrowserContext, type Worker } from '@playwright/test';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { Dirent } from 'node:fs';
+import { attachReplay, type ReplayHandle } from './perfReplay';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_REFRESH_DAYS = 10;
@@ -445,8 +448,16 @@ export async function launchExtensionContext(
 ): Promise<BrowserContext> {
   await assertExtensionBuildDirectory(harnessOptions.extensionDir);
   const args = createChromiumExtensionArgs(harnessOptions.extensionDir);
-  if (launchOptions.extraArgs?.length) {
-    args.push(...launchOptions.extraArgs);
+  const replayDir = resolveE2eReplayDir();
+  const extraArgs = [...(launchOptions.extraArgs ?? [])];
+  if (replayDir) {
+    // 回放模式：源站走代理兜底（直连 CDN 路由断），本地回环地址直连（cloud 自托管/本地 mock 不经代理）
+    extraArgs.filter((arg) => arg !== '--no-proxy-server');
+    const proxy = (process.env.JAVDB_E2E_PROXY ?? 'http://127.0.0.1:10808').trim();
+    extraArgs.push(`--proxy-server=${proxy}`, '--proxy-bypass-list=<-loopback>');
+  }
+  if (extraArgs.length) {
+    args.push(...extraArgs);
   }
 
   if (harnessOptions.chromeDataSnapshot.enabled) {
@@ -464,12 +475,35 @@ export async function launchExtensionContext(
     );
   }
 
-  return chromium.launchPersistentContext(harnessOptions.userDataDir, {
+  const context = await chromium.launchPersistentContext(harnessOptions.userDataDir, {
     channel: launchOptions.channel ?? 'chromium',
     headless: launchOptions.headless ?? false,
     slowMo: launchOptions.slowMo,
     args,
   });
+
+  if (replayDir) {
+    // 离线回放：页面流量命中缓存直接 fulfill，未命中走代理放行 live（安全阀）。
+    // 必须在 context 返回前挂好会话，堵住主文档导航早于 attach 的竞态（预热轮实证教训）。
+    installReplayAwareNodeFetch(replayDir);
+    const replayHandle = await attachReplay(context, {
+      cacheDir: replayDir,
+      mode: 'replay',
+      log: (msg) => {
+        if (process.env.JAVDB_E2E_REPLAY_VERBOSE) console.info(msg);
+      },
+    });
+    context.on('close', () => {
+      const { total } = replayHandle.stats();
+      const hitRate = total.intercepted > 0 ? Math.round((total.hits / total.intercepted) * 100) : 100;
+      console.info(
+        `[E2E replay] 页面流量: 拦截 ${total.intercepted} / 命中 ${total.hits} (${hitRate}%) / 放行 ${total.misses}`
+        + (total.missedUrls.length ? `；放行样例: ${total.missedUrls.slice(0, 3).join(' | ').slice(0, 160)}` : ''),
+      );
+    });
+  }
+
+  return context;
 }
 
 export async function readExtensionId(context: BrowserContext, timeoutMs = 15_000): Promise<string> {
@@ -830,4 +864,91 @@ function formatError(error: unknown): string {
 
 function isExtensionWorker(worker: Worker): boolean {
   return worker.url().startsWith('chrome-extension://');
+}
+
+
+// ---------------------------------------------------------------------------
+// E2E 离线回放（cycle-10）：JAVDB_E2E_REPLAY_DIR 设定时，浏览器页面流量与 spec
+// 的 node 侧 fetch 均优先命中本地回放缓存，把功能测试对源站的请求压到一次预热。
+// 与 scripts/perfReplay.ts 同一缓存格式（key=sha1(method+url)，first-write-wins）。
+// ---------------------------------------------------------------------------
+
+interface ReplayCacheEntry {
+  m: string;
+  u: string;
+  s: number;
+  h: [string, string][];
+  b: string; // base64
+}
+
+function resolveE2eReplayDir(): string | null {
+  const raw = process.env.JAVDB_E2E_REPLAY_DIR?.trim();
+  if (!raw) return null;
+  return path.resolve(process.cwd(), raw);
+}
+
+function replayCacheKey(method: string, url: string): string {
+  return crypto.createHash('sha1').update(`${method} ${url}`).digest('hex');
+}
+
+function readReplayCacheEntrySync(cacheDir: string, method: string, url: string): ReplayCacheEntry | null {
+  const key = replayCacheKey(method, url);
+  try {
+    const raw = fsSync.readFileSync(path.join(cacheDir, key.slice(0, 2), `${key}.json`), 'utf8');
+    return JSON.parse(raw) as ReplayCacheEntry;
+  } catch {
+    return null;
+  }
+}
+
+/** Response 构造器禁写的 header（否则抛 TypeError） */
+const FORBIDDEN_RESPONSE_HEADERS = new Set([
+  'accept-charset', 'accept-encoding', 'access-control-allow-credentials',
+  'access-control-allow-headers', 'access-control-allow-origin',
+  'access-control-expose-headers', 'access-control-max-age',
+  'access-control-request-method', 'connection', 'content-length', 'cookie',
+  'cookie2', 'date', 'dnt', 'expect', 'feature-policy', 'host', 'keep-alive',
+  'origin', 'referer', 'te', 'trailer', 'transfer-encoding', 'upgrade',
+  'user-agent', 'via',
+]);
+
+let nodeFetchReplayInstalled = false;
+const nodeFetchReplayStats = { hits: 0, misses: 0 };
+
+/**
+ * 给 spec 里的裸 fetch（undici 直连）加一层缓存直读：命中回放缓存直接返回
+ * Response，未命中放行原 fetch。playwright 单 worker 进程内只装一次。
+ */
+export function installReplayAwareNodeFetch(cacheDir: string): void {
+  if (nodeFetchReplayInstalled) return;
+  nodeFetchReplayInstalled = true;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    try {
+      const rawMethod = init?.method ?? (typeof input === 'object' && input !== null && 'method' in input ? (input as Request).method : undefined) ?? 'GET';
+      const method = String(rawMethod).toUpperCase();
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : typeof input === 'object' && input !== null ? (input as Request).url : '';
+      if ((method === 'GET' || method === 'HEAD') && /^https?:/i.test(url)) {
+        const entry = readReplayCacheEntrySync(cacheDir, method, url);
+        if (entry) {
+          nodeFetchReplayStats.hits += 1;
+          const headers = new Headers(
+            (entry.h ?? [])
+              .filter(([name]) => !FORBIDDEN_RESPONSE_HEADERS.has(name.toLowerCase()))
+              .map(([name, value]) => [name, value]),
+          );
+          return new Response(Buffer.from(entry.b ?? '', 'base64'), { status: entry.s ?? 200, headers });
+        }
+      }
+      nodeFetchReplayStats.misses += 1;
+    } catch {
+      // 读缓存失败不阻塞测试，放行 live
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  process.once('exit', () => {
+    console.info(`[E2E replay] node fetch: 缓存命中 ${nodeFetchReplayStats.hits} 次 / 放行 live ${nodeFetchReplayStats.misses} 次`);
+  });
 }
