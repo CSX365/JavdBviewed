@@ -11,6 +11,7 @@ import { actorManager } from '../actors';
 import { actorQuickActionsManager } from '../actorEnhancement/actorQuickActionsManager';
 import { newWorksManager } from '../newWorks';
 import { processListItems, processVisibleItems } from './content/itemProcessor';
+import { scheduleExistingItemsEnhancement } from './content/existingItemsScheduler';
 import {
   appendSuperRankingTop250Page,
   getSuperRankingTop250PageInfo,
@@ -555,8 +556,15 @@ class ListEnhancementManager {
   private processExistingItems(): void {
     const items = [...document.querySelectorAll<HTMLElement>('.movie-list .item')];
     countContentPerformanceEvent('listEnhancement.existingItems', items.length);
-    items.forEach(item => this.enhanceItem(item));
-    processListItems(items.filter(item => Boolean(extractListItemVideoInfo(item))));
+    // S1-1b：enhance 分块（首块同步，后续 idle 回调），拆掉冷启动单次长任务；
+    // 全部 enhance 完成后再走 processListItems（保持既有先后关系）。
+    scheduleExistingItemsEnhancement({
+      items,
+      enhance: item => this.enhanceItem(item),
+      onAllEnhanced: () => {
+        processListItems(items.filter(item => Boolean(extractListItemVideoInfo(item))));
+      },
+    });
   }
 
   private observeNewItems(): void {
