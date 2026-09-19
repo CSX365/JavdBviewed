@@ -167,7 +167,55 @@ describe('GlobalTaskCenter 事件驱动租约唤醒（S2-2）', () => {
     expect(center2.requestLease(y)).toMatchObject({ granted: false, waitReason: 'task-canceled' });
   });
 
-  it('F2: 源页同步链排队时，后台预热任务即使组槽空闲也不得重入 source-page-heavy 槽', () => {
+  it('F2 (S1-2 同页语义): 同页同步链排队时，同页预热任务即使组槽空闲也不得重入 source-page-heavy 槽', () => {
+    // S2-2 (cycle-7) 原始场景按同页保留：同一页的 critical initialSync 排队时，
+    // 该页预热任务不得在 prompt 雷群中重入组槽（否则 initialSync 被持续弹回）
+    const center = new GlobalTaskCenter();
+    center.updateVisibility(1, true);
+    const prewarm1 = center.registerTask({
+      ...descriptor('actorMarks:page', 1),
+      taskId: 'task-prewarm1',
+      pageUrl: 'https://javdb.com/v/samepage',
+      mainId: 'samepage',
+      pageInstanceId: 'page-same',
+      visibilityPolicy: 'background_throttled',
+      phase: 'idle',
+    }).taskId;
+    const sync = center.registerTask({
+      ...descriptor('videoStatus:initialSync', 1),
+      taskId: 'task-sync',
+      pageUrl: 'https://javdb.com/v/samepage',
+      mainId: 'samepage',
+      pageInstanceId: 'page-same',
+      phase: 'critical',
+    }).taskId;
+    const prewarm2 = center.registerTask({
+      ...descriptor('videoFavoriteRating:init', 1),
+      taskId: 'task-prewarm2',
+      pageUrl: 'https://javdb.com/v/samepage',
+      mainId: 'samepage',
+      pageInstanceId: 'page-same',
+      visibilityPolicy: 'background_throttled',
+      phase: 'idle',
+    }).taskId;
+
+    // prewarm1 先占住组槽；同页同步链任务排队
+    expect(center.requestLease(prewarm1).granted).toBe(true);
+    expect(center.requestLease(sync)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
+    // prewarm1 运行中的第二个同页预热：先被同页预热预算（page=1）挡下，到不了组检查
+    expect(center.requestLease(prewarm2)).toMatchObject({ granted: false, waitReason: 'smart-background-page-budget' });
+
+    // prewarm1 完成、组槽与同页预热预算都释放 —— F2：同页存在排队中的同步链任务，同页预热仍不得重入
+    center.completeTask(prewarm1);
+    expect(center.requestLease(prewarm2)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
+
+    // 同步链任务随后获得租约（组槽让位）
+    expect(center.requestLease(sync).granted).toBe(true);
+  });
+
+  it('F2 (S1-2 跨页放行): 他页同步链排队不挡本页预热 —— 解开 16 detail tab 跨页饿死环', () => {
+    // r2 窗口根因：hidden 页 sync 被 higher-priority-wait/hidden 预算长期卡住（queued 8624 次观测），
+    // 旧全局 F2 判定使组槽 76% 时间（124/164 快照）空闲但预热全被挡死，可见页增强 UI 延迟 90s+
     const center = new GlobalTaskCenter();
     center.updateVisibility(1, true);
     center.updateVisibility(2, true);
@@ -175,38 +223,42 @@ describe('GlobalTaskCenter 事件驱动租约唤醒（S2-2）', () => {
     const prewarm1 = center.registerTask({
       ...descriptor('actorMarks:page', 1),
       taskId: 'task-prewarm1',
-      pageUrl: 'https://javdb.com/v/prewarm-1',
-      mainId: 'prewarm-1',
-      pageInstanceId: 'page-prewarm1',
+      pageUrl: 'https://javdb.com/v/page-a',
+      mainId: 'page-a',
+      pageInstanceId: 'page-a',
       visibilityPolicy: 'background_throttled',
       phase: 'idle',
     }).taskId;
     const sync = center.registerTask({
       ...descriptor('videoStatus:initialSync', 2),
       taskId: 'task-sync',
-      pageInstanceId: 'page-sync',
+      pageInstanceId: 'page-b',
       phase: 'critical',
     }).taskId;
     const prewarm2 = center.registerTask({
-      ...descriptor('actorMarks:page', 3),
+      ...descriptor('videoFavoriteRating:init', 3),
       taskId: 'task-prewarm2',
-      pageUrl: 'https://javdb.com/v/prewarm-2',
-      mainId: 'prewarm-2',
-      pageInstanceId: 'page-prewarm2',
+      pageUrl: 'https://javdb.com/v/page-c',
+      mainId: 'page-c',
+      pageInstanceId: 'page-c',
       visibilityPolicy: 'background_throttled',
       phase: 'idle',
     }).taskId;
 
-    // 预热任务先占住组槽；同步链任务与第二个预热任务排队
+    // prewarm1（page-a）占住组槽；page-b 的 sync 与 page-c 的 prewarm2 排队
     expect(center.requestLease(prewarm1).granted).toBe(true);
     expect(center.requestLease(sync)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
     expect(center.requestLease(prewarm2)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
 
-    // 预热任务完成、槽位空闲 —— F2：存在排队中的同步链任务，预热任务仍不得重入
+    // 槽位释放后：page-c 无同页 queued sync → prewarm2 放行（旧全局 F2 在此以 source-page-heavy-budget 挡死）
     center.completeTask(prewarm1);
-    expect(center.requestLease(prewarm2)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
+    expect(center.requestLease(prewarm2).granted).toBe(true);
 
-    // 同步链任务随后获得租约（组槽让位）
+    // 组槽被 prewarm2 正常占用 → sync 按组预算排队（常规组槽竞争，非 F2）
+    expect(center.requestLease(sync)).toMatchObject({ granted: false, waitReason: 'source-page-heavy-budget' });
+
+    // prewarm2 完成后 sync 获得租约
+    center.completeTask(prewarm2);
     expect(center.requestLease(sync).granted).toBe(true);
   });
 

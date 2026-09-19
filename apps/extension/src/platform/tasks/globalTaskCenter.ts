@@ -510,12 +510,19 @@ export class GlobalTaskCenter {
   /**
    * F2 (cycle-7): 是否存在排队中的源页同步链任务（videoStatus:initialSync/fullRefresh）。
    * 排除 tab-hidden 暂缓态（该页不参与前台调度，预热任务同为后台节流，无冲突）。
+   *
+   * S1-2 (cycle-9): 判定收窄为同页（pageInstanceId）。原全局判定「任意页有 queued sync 就挡所有页预热」
+   * 在 16 detail tab 场景形成跨页饿死环（r2 窗口实测：组槽 76% 时间（124/164 快照）空闲但被 F2 挡死，
+   * 可见 tab 3 个预热任务 89s 内各重试 ~85 次无一完成 → 真机水印/收藏评分/洞察延迟 90s+）。
+   * S2-2 原始语义（cycle-7）按同页保留：同页 sync 排队时同页预热仍不得重入组槽。
    */
-  private hasQueuedSourcePageSyncTask(): boolean {
+  private hasQueuedSourcePageSyncTask(pageInstanceId: string): boolean {
     for (const record of this.store.listTasks()) {
       if (record.runtime.status !== 'queued') continue;
       if (record.runtime.waitReason === 'tab-hidden') continue;
-      if (isSourcePageSyncLabel(record.descriptor.label)) return true;
+      if (!isSourcePageSyncLabel(record.descriptor.label)) continue;
+      if (record.descriptor.pageInstanceId !== pageInstanceId) continue;
+      return true;
     }
     return false;
   }
@@ -889,9 +896,12 @@ export class GlobalTaskCenter {
     // 后台增强预热任务（videoFavoriteRating:init/actorMarks:page/insights:collector）
     // 即使组槽空闲也不得重入 source-page-heavy 槽（S2-2 长尾根因：预热任务在 prompt 雷群中
     // 逐个重入槽位，critical initialSync 被持续以 source-page-heavy-budget 弹回）
+    // S1-2 (cycle-9): 仅同页（pageInstanceId）的 queued sync 才挡本页预热 ——
+    // 跨页 queued sync（典型：hidden 页 sync 被 higher-priority-wait/hidden 预算卡住）不再挡死
+    // 其他页（尤其可见页）的预热，解开 76% 组槽空转的跨页饿死环。
     const blockedBySourceSyncQueue = leaseGroup === 'source-page-heavy'
       && !isSourcePageSyncLabel(task.descriptor.label)
-      && this.hasQueuedSourcePageSyncTask();
+      && this.hasQueuedSourcePageSyncTask(task.descriptor.pageInstanceId);
     if (
       leaseGroup
       && leaseGroupLimit !== undefined

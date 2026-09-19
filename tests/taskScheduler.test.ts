@@ -1312,12 +1312,15 @@ describe('GlobalTaskCenter multi pageInstance pressure (P2 R3)', () => {
 
     center.completeTask('source-heavy-status');
 
-    // F2 (cycle-7) 相位序：initialSync 完成后，排队的 fullRefresh 仍属源页同步链，
-    // 后台增强任务（actors）在同步链跑完前不得重入 source-page-heavy 槽
-    expect(center.requestLease('source-heavy-actors')).toEqual({
+    // S1-2 (cycle-9)：F2 收窄为同页 —— page-2 的 actors 无同页 queued sync，槽位释放后放行；
+    // page-3 的 fullRefresh 按常规组预算排队（槽位被 actors 占用），actors 完成后获得租约。
+    // （旧全局 F2 在此跨页挡死 actors，是 16 detail tab 场景 76% 组槽空转饿死环的一环）
+    expect(center.requestLease('source-heavy-actors')).toEqual({ granted: true });
+    expect(center.requestLease('source-light-refresh')).toEqual({
       granted: false,
       waitReason: 'source-page-heavy-budget',
     });
+    center.completeTask('source-heavy-actors');
     expect(center.requestLease('source-light-refresh')).toEqual({ granted: true });
   });
 
