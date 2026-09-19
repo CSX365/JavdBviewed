@@ -43,6 +43,8 @@ import {
   readExtensionId,
   resolveExtensionHarnessOptions,
 } from './extensionHarness';
+import { launchRealVisibilityContext } from './realVisibilityLaunch';
+import type { RealVisibilityLaunch } from './realVisibilityLaunch';
 import {
   redactDiagnosticPayload,
   summarizeDiagnosticSamples,
@@ -295,6 +297,8 @@ interface Args {
   cdpTrace: boolean;
   /** 逐 tick 进程分类 CPU/RSS 时间轴 JSONL（浏览器级复合负载分析） */
   procTimeline: boolean;
+  /** S1-2: 真实 tab 可见性模式（手动启 Chrome + CDP 代理改写 focusEmulation true->false） */
+  realVisibility: boolean;
 }
 
 interface Job {
@@ -1575,6 +1579,16 @@ function extensionVersion(): string {
   }
 }
 
+
+function extensionBuild(): string {
+  try {
+    const v = JSON.parse(readFileSync(path.join(CWD, 'version.json'), 'utf8')) as { build?: number };
+    return v.build !== undefined ? `build-${v.build}` : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // seed 守卫
 // ---------------------------------------------------------------------------
@@ -2204,6 +2218,7 @@ async function runScenarioC(
   sampler: RunSampler,
   durations: Durations,
   failures: string[],
+  realVisibility: boolean,
 ): Promise<{ tInteractiveMs: number; perTab: PerTabRec[]; detailTimelines: DetailTimelineRec[]; variant: CPagesVariant; orchCpu: OrchTabCpuRaw[] }> {
   await context.addCookies([
     { name: 'over18', value: '1', domain: 'javdb570.com', path: '/' },
@@ -2511,6 +2526,20 @@ async function runScenarioC(
 
   sampler.setPhase('steady');
   log(`[C] phase: steady（${durations.steadyMsC}ms，${pages.length} tab 并发 smart 调度）`);
+  // S1-2 可见性诊断：steady 起点读各 tab visibilityState（保留 5s 观察窗，与既有基线口径一致）。
+  // --real-visibility 模式下应为「仅最后打开的 tab visible、其余 hidden」，不符记 failures。
+  {
+    const vis: string[] = [];
+    for (const page of pages) {
+      try { vis.push(await page.evaluate(() => document.visibilityState)); } catch { vis.push('?'); }
+    }
+    const visibleCount = vis.filter((v) => v === 'visible').length;
+    log(`[S1-2] visibilityState@steady: ${vis.join(',')}（visible=${visibleCount}/${vis.length}）`);
+    if (realVisibility && visibleCount !== 1) {
+      failures.push(`S1-2 可见性异常：real-visibility 模式下 steady 应恰好 1 个 visible tab，实际 ${visibleCount}（模式未生效？）`);
+    }
+    await sleep(5000);
+  }
   await sleep(durations.steadyMsC);
 
   // --- 逐 tab 终态归因（全量累计 buffer + CDP 堆指标）---
@@ -2640,12 +2669,14 @@ interface RunReport {
     durationMs: number;
     extensionId: string;
     extensionVersion: string;
+  extensionBuild: string;
     gitSha: string;
     profileDir: string;
     siteListUrl: string | null;
     pagesVariant: CPagesVariant | null;
     featuresOff: string[];
     quick: boolean;
+    realVisibility: boolean;
     seedGuard: GuardInfo | null;
     fatalError: string | null;
   };
@@ -2783,7 +2814,16 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
   // 扩展页持续 ERR_BLOCKED_BY_CLIENT，probe 已证实）；也不用跨浏览器持久化设置
   // （chrome.storage.local 快速关闭时不保证落盘）。getSettings() 全程实时读存储并
   // 与 DEFAULT_SETTINGS 合并（无全局缓存），所以直接在测量浏览器内写 arm 设置即生效。
-  const context = await launchExtensionContext(options, launchOptions);
+  // S1-2: --real-visibility 手动启动（CDP 代理改写 focusEmulation），否则 harness 直连
+  let realVis: RealVisibilityLaunch | null = null;
+  let context: BrowserContext;
+  if (args.realVisibility) {
+    realVis = await launchRealVisibilityContext(options, launchOptions);
+    log(`[${label}] real-visibility 模式：手动 Chrome + CDP 代理（focusEmulation true->false）`);
+    context = realVis.context;
+  } else {
+    context = await launchExtensionContext(options, launchOptions);
+  }
   let sampler: RunSampler | null = null;
   let runError: string | null = null;
   try {
@@ -2868,6 +2908,7 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
           sampler,
           durations,
           failures,
+          args.realVisibility,
         );
         tInteractiveMs = result.tInteractiveMs;
         if (result.perTab.length > 0) perTab = result.perTab;
@@ -2944,12 +2985,14 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
         durationMs: Date.now() - startedAt,
         extensionId,
         extensionVersion: extensionVersion(),
+        extensionBuild: extensionBuild(),
         gitSha: gitShortSha(),
         profileDir: path.relative(CWD, PROFILE_DIR),
         siteListUrl: job.scenario === 'B' || job.scenario === 'C' ? (args.listPage ?? SITE_LIST_URL) : null,
         pagesVariant: job.scenario === 'C' ? args.pages : null,
         featuresOff: args.featuresOff ?? [],
         quick: args.quick,
+        realVisibility: args.realVisibility,
         seedGuard: guard,
         fatalError: runError,
       },
@@ -3007,7 +3050,13 @@ async function runProfile(job: Job, args: Args, guard: GuardInfo | null): Promis
   } finally {
     // 兜底：无论成功/异常都确保采样循环退出（避免僵尸 node 进程），再关浏览器
     if (sampler) await sampler.dispose(5_000);
-    await context.close();
+    if (realVis) {
+      // CDP 附着场景 default context 的 close 可能抛「已断开」，必须确保 cleanup（杀进程组）一定执行
+      try { await context.close(); } catch { /* 继续 cleanup */ }
+    } else {
+      await context.close();
+    }
+    if (realVis) await realVis.cleanup();
   }
 }
 
@@ -3073,6 +3122,7 @@ function parseArgs(argv: string[]): Args {
     featuresOff: undefined,
     cdpTrace: false,
     procTimeline: false,
+    realVisibility: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -3138,6 +3188,9 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--proc-timeline':
         args.procTimeline = true;
+        break;
+      case '--real-visibility':
+        args.realVisibility = true;
         break;
       default:
         throw new Error(`未知参数：${token}`);
