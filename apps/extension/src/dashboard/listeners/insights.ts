@@ -1,6 +1,16 @@
 // src/dashboard/listeners/insights.ts
 
-import { initOrUpdateHomeCharts, invalidateHomeOverview } from '../home/charts';
+// 首页图表模块懒加载（S1-C）：insights 监听仅在 DB 变更事件后触发刷新，届时再动态加载
+let homeChartsModulePromise: Promise<typeof import('../home/charts')> | null = null;
+function loadHomeChartsModule(): Promise<typeof import('../home/charts')> {
+  if (!homeChartsModulePromise) {
+    homeChartsModulePromise = import('../home/charts').catch((error) => {
+      homeChartsModulePromise = null; // 失败后允许下次事件重试
+      throw error;
+    });
+  }
+  return homeChartsModulePromise;
+}
 import { shouldRefreshHomeCharts } from './insightsRefreshPolicy';
 
 export function createInsightsRefreshScheduler(
@@ -50,14 +60,14 @@ export function bindInsightsListeners(): void {
   try {
     const W: any = window as any;
     if (!W.__INSIGHTS_CHANGED_BOUND__) {
-      const scheduleRefresh = createInsightsRefreshScheduler(() => initOrUpdateHomeCharts());
+      const scheduleRefresh = createInsightsRefreshScheduler(() => loadHomeChartsModule().then((charts) => charts.initOrUpdateHomeCharts()));
       chrome.runtime.onMessage.addListener((msg: any) => {
         try {
           if (msg && msg.type === 'DB:INSIGHTS_VIEWS_CHANGED') {
             const activeTabId = document.querySelector<HTMLElement>('.tab-content.active')?.id ?? null;
             handleInsightsViewsChanged(
               { activeTabId, visibilityState: document.visibilityState },
-              invalidateHomeOverview,
+              () => { loadHomeChartsModule().then((charts) => charts.invalidateHomeOverview()).catch(() => {}); },
               scheduleRefresh,
             );
           }

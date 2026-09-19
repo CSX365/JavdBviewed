@@ -1,5 +1,4 @@
 import type { UserProfile } from '../../types';
-import { initUserProfileSection } from '../userProfile';
 import { userService } from '../services/userService';
 
 const HELP_URL = 'https://docs.we-together.club/';
@@ -8,6 +7,8 @@ const TELEGRAM_URL = 'https://t.me/javdbviewed';
 
 let boundRoot: HTMLElement | null = null;
 let cleanupMenuEvents: (() => void) | null = null;
+// S1-C：用户资料区懒加载标记（userProfile 及依赖子树 ~62KB，首次打开菜单时加载）
+let userProfileSectionLoaded = false;
 
 export function initDashboardUserMenu(): void {
   const root = document.getElementById('dashboard-user-menu-root');
@@ -58,7 +59,6 @@ export function initDashboardUserMenu(): void {
   `;
 
   cleanupMenuEvents = bindMenuEvents(root);
-  initUserProfileSection();
   root.dataset.userMenuInitialized = 'true';
   boundRoot = root;
 }
@@ -78,6 +78,16 @@ function bindMenuEvents(root: HTMLElement): () => void {
   const handleTriggerClick = (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    if (popover.hidden && !userProfileSectionLoaded) {
+      // S1-C：用户资料区懒加载——首次打开菜单时再加载 userProfile 模块
+      userProfileSectionLoaded = true;
+      void import('../userProfile')
+        .then(({ initUserProfileSection }) => { initUserProfileSection(); })
+        .catch((error) => {
+          userProfileSectionLoaded = false; // 失败允许下次打开重试
+          console.error('[UserMenu] 加载用户资料模块失败:', error);
+        });
+    }
     setOpen(popover.hidden);
   };
 

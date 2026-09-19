@@ -2,7 +2,9 @@
 // 通过 import.meta.glob 在构建时内联 HTML 片段，同时在运行时提供 fetch 回退
 
 // Vite 会将匹配到的文件以 raw 文本形式打包进来（使用 ?raw 以兼容新版本）
-const rawPartials = import.meta.glob('../partials/**/*.html', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+// L-5：eager 内联会把 ~476KB HTML 字符串全部塞进 dashboard 主 chunk（解析/求值都在冷窗口）。
+// 改为按需动态 import：各 partial 独立成 chunk，从扩展缓存读取，首屏只拉当前用到的几个。
+const partialLoaders = import.meta.glob('../partials/**/*.html', { query: '?raw', import: 'default', eager: false }) as Record<string, () => Promise<string>>;
 
 function normalizeName(name: string): string {
   return name
@@ -11,17 +13,23 @@ function normalizeName(name: string): string {
     .replace(/^\.\//, '');
 }
 
-function findByName(name: string): string | undefined {
+function findLoader(name: string): (() => Promise<string>) | undefined {
   const keyEnd = `/partials/${normalizeName(name)}`;
-  for (const key of Object.keys(rawPartials)) {
-    if (key.endsWith(keyEnd)) return rawPartials[key];
+  for (const key of Object.keys(partialLoaders)) {
+    if (key.endsWith(keyEnd)) return partialLoaders[key];
   }
   return undefined;
 }
 
 export async function loadPartial(name: string): Promise<string> {
-  const hit = findByName(name);
-  if (typeof hit === 'string') return hit;
+  const loader = findLoader(name);
+  if (loader) {
+    try {
+      return await loader();
+    } catch {
+      // 动态 chunk 加载失败时落到下面的 fetch 回退
+    }
+  }
 
   // 回退：从扩展资源中读取（需确保构建产物中包含该文件）
   try {

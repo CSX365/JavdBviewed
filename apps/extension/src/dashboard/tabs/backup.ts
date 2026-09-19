@@ -4,7 +4,8 @@
  * @module dashboard/tabs
  */
 
-import { initBackupActions, updateSyncStatus } from '../backup/actions';
+import { initBackupActions } from '../backup/actions';
+import { updateSyncStatus } from '../backup/syncStatus';
 
 export function initBackupTab(): void {
   const root = document.getElementById('tab-backup');

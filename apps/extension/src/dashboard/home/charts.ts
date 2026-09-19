@@ -10,7 +10,7 @@ import {
   loadHomeOverviewStages,
 } from './homeOverviewLoader';
 import { buildHomeStatusData } from './homeChartData';
-import { createHomeChartRenderQueue, scheduleHomeChartRender, yieldToBrowser } from './homeRenderScheduler';
+import { createHomeChartRenderQueue, scheduleDeferredRender, scheduleHomeChartRender, type HomeChartRenderTask, yieldToBrowser } from './homeRenderScheduler';
 import {
   createHomeChartLifecycle,
   disposeChartRegistry,
@@ -150,6 +150,41 @@ async function ensureG2PlotLoaded(): Promise<any> {
     resolve(void 0);
   });
   return g2plotLoadingPromise.then(() => ((window as any).G2Plot || null));
+}
+
+// L-5：g2plot 是 ~1MB 单文件经典脚本。消融对照（stub 换真）显示它约占冷窗口总 busy 的 ~14%，
+// 不是 max 帧主因，但注入+求值与 app 模块顶层求值叠加会放大 0-3s 的长帧。
+// 首访（homeOverviewHasRendered=false）先过 3.5s 保护窗（实测冷窗口顶层执行持续 ~3.2s），
+// 再进空闲队列注入；期间 shell 已有 .chart-loading-overlay，用户侧无感知差异。
+// 刷新场景（已渲染过）无保护窗，直接空闲队列。
+const HOME_G2PLOT_COLD_GUARD_MS = 3500;
+const HOME_G2PLOT_COLD_IDLE_TIMEOUT_MS = 2500;
+const HOME_G2PLOT_WARM_IDLE_TIMEOUT_MS = 1200;
+
+let g2plotDeferTask: HomeChartRenderTask | null = null;
+
+function ensureG2PlotLoadedDeferred(session: HomeChartSession, warmed: boolean): Promise<any> {
+  return new Promise<any>((resolve) => {
+    let settled = false;
+    const done = (value: any): void => {
+      if (settled) return;
+      settled = true;
+      session.signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = (): void => done(null);
+    if (g2plotDeferTask) g2plotDeferTask.cancel();
+    const task = scheduleDeferredRender(() => {
+      if (g2plotDeferTask === task) g2plotDeferTask = null;
+      void ensureG2PlotLoaded().then(done);
+    }, {
+      guardMs: warmed ? 0 : HOME_G2PLOT_COLD_GUARD_MS,
+      timeoutMs: warmed ? HOME_G2PLOT_WARM_IDLE_TIMEOUT_MS : HOME_G2PLOT_COLD_IDLE_TIMEOUT_MS,
+      signal: session.signal,
+    });
+    g2plotDeferTask = task;
+    session.signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function getChartShell(id: string): HTMLElement | null {
@@ -902,7 +937,7 @@ async function renderHomeCharts(): Promise<void> {
       if (isHomeChartSessionActive(session)) homeOverviewHasRendered = true;
       return;
     }
-    const G2P: any = await ensureG2PlotLoaded();
+    const G2P: any = await ensureG2PlotLoadedDeferred(session, homeOverviewHasRendered);
     if (!isHomeChartSessionActive(session)) return;
     if (!G2P) {
       if (plan.renderer === 'g2plot') return;
@@ -966,7 +1001,7 @@ async function renderHomeCharts(): Promise<void> {
           charts: HC,
           canRender: () => isHomeChartSessionActive(session),
         });
-      }, { timeoutMs: 900 });
+      }, { timeoutMs: 2500 });
     } catch {}
 
     try {

@@ -13,7 +13,6 @@ import { ensureModalsMounted } from '../../dashboard/modals/init';
 // initAISettingsTab 已迁移到模块化设置系统
 // initializeNetworkTestTab 已迁移到模块化设置系统
 // drive115 功能已迁移到模块化设置系统
-import { initModal } from '../../dashboard/import';
 // import { logAsync } from './logger';
 // import { showMessage } from './ui/toast';
 // import { VIDEO_STATUS } from '../utils/config';
@@ -23,18 +22,17 @@ import { initModal } from '../../dashboard/import';
 import { initDashboardUserMenu } from '../../dashboard/userMenu';
 import { initDashboardLastPageResume } from '../../dashboard/lastPage';
 // import { initDataSyncSection } from './dataSync';
-import '../../dashboard/ui/dataViewModal'; // 确保 dataViewModal 被初始化
 import { ensureMounted } from '../../dashboard/loaders/partialsLoader';
 import { bindInsightsListeners } from '../../dashboard/listeners/insights';
 import { initTopbarIcons } from '../../dashboard/topbar/icons';
 import { initVersionBadge } from '../../dashboard/topbar/versionChecker';
-import { initBackupActions, updateSyncStatus as updateSyncStatusModule } from '../../dashboard/backup/actions';
+import { updateSyncStatus as updateSyncStatusModule } from '../../dashboard/backup/syncStatus';
 import { runQASelfCheck as runQASelfCheckModule } from '../../dashboard/qa/selfCheck';
 import { bindUiListeners } from '../../dashboard/listeners/ui';
-import { refreshHomeOverview, bindHomeChartsRangeControls, bindHomeRefreshButton } from '../../dashboard/home/charts';
+// 首页图表改为事件触发时动态加载（见下方 loadHomeChartsModule），不再静态进 dashboard 入口闭包
 import { STORAGE_KEYS } from '../../utils/config';
 import { getSettings } from '../../utils/storage';
-import { handleCloudflareVerification } from '../../dashboard/dataSync/cloudflareVerification';
+// cloudflareVerification 改为消息监听内动态加载（S1-C：~14.5KB 不进 dashboard 入口闭包）
 import { mountDashboardReleaseAnnouncement } from './releaseAnnouncementBootstrap';
 import { reportDashboardOpenTelemetry } from './telemetryDashboardOpen';
 import { installDashboardConsoleProxy } from './consoleBootstrap';
@@ -45,6 +43,19 @@ import {
     mountDashboardThemeSwitcher,
 } from './themeBootstrap';
 import { mountDashboardShell } from './shell/mountDashboardShell';
+
+// 首页图表模块懒加载（S1-C 架构级入口拆分）：charts.ts 依赖子树（overview/renderScheduler/snapshot 等，~84KB 源码）
+// 不再进 dashboard 入口闭包，由 home:init-required / tab:show 事件触发时动态加载。
+let homeChartsModulePromise: Promise<typeof import('../../dashboard/home/charts')> | null = null;
+function loadHomeChartsModule(): Promise<typeof import('../../dashboard/home/charts')> {
+    if (!homeChartsModulePromise) {
+        homeChartsModulePromise = import('../../dashboard/home/charts').catch((error) => {
+            homeChartsModulePromise = null; // 失败后允许下次事件重试
+            throw error;
+        });
+    }
+    return homeChartsModulePromise;
+}
 
 initializeDashboardThemeEarly();
 installDashboardConsoleProxy();
@@ -61,12 +72,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'cloudflare-verification-request') {
         const url = message.url;
         
-        // 处理验证
-        handleCloudflareVerification(url).then((result) => {
-            sendResponse(result);
-        }).catch((error) => {
-            sendResponse({ success: false, error: error.message || '验证失败' });
-        });
+        // 处理验证（S1-C：cloudflareVerification 仅在实际收到验证请求时动态加载）
+        import('../../dashboard/dataSync/cloudflareVerification')
+            .then(({ handleCloudflareVerification }) => handleCloudflareVerification(url))
+            .then((result) => {
+                sendResponse(result);
+            }).catch((error) => {
+                sendResponse({ success: false, error: (error && error.message) || '验证失败' });
+            });
         
         return true; // 保持消息通道开启
     }
@@ -155,9 +168,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         if (!(window as any).__HOME_INIT_REQUIRED_BOUND__) {
             window.addEventListener('home:init-required' as any, async () => {
-                try { bindHomeChartsRangeControls(); } catch {}
-                try { await refreshHomeOverview(); } catch {}
-                try { bindHomeRefreshButton(); } catch {}
+                try {
+                    const charts = await loadHomeChartsModule();
+                    try { charts.bindHomeChartsRangeControls(); } catch {}
+                    try { await charts.refreshHomeOverview(); } catch {}
+                    try { charts.bindHomeRefreshButton(); } catch {}
+                } catch (error) {
+                    console.error('[Dashboard] 加载首页图表模块失败:', error);
+                }
             });
             (window as any).__HOME_INIT_REQUIRED_BOUND__ = true;
         }
@@ -172,11 +190,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // initAISettingsTab(); // 已迁移到模块化设置系统
     // initDrive115Tab(); // 已迁移到模块化设置系统
     // initLogsTab(); // 已迁移到模块化设置系统
-    initBackupActions(document);
     initDashboardUserMenu();
     void initDashboardLastPageResume();
     // initDataSyncSection(); // 移除重复调用，由 initSyncTab 处理
-    initModal();
     updateSyncStatusModule();
     mountDashboardReleaseAnnouncement().catch(error => {
         console.warn('[Dashboard] 发布提示弹窗挂载失败:', error);
@@ -186,7 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             window.addEventListener('tab:show' as any, async (e: any) => {
                 const id = e?.detail?.tabId;
                 if (id === 'tab-home') {
-                    try { bindHomeChartsRangeControls(); } catch {}
+                    try { loadHomeChartsModule().then((charts) => { charts.bindHomeChartsRangeControls(); }).catch(() => {}); } catch {}
                 }
             });
             (window as any).__HOME_TAB_SHOW_BOUND__ = true;

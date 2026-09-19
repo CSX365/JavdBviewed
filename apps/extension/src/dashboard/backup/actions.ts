@@ -1,15 +1,12 @@
 // @ts-nocheck
-import { STATE } from '../state';
 import { logAsync } from '../logger';
 import { showMessage } from '../ui/toast';
-import { setValue, getValue } from '../../utils/storage';
-import { STORAGE_KEYS } from '../../utils/config';
-import { showWebDAVRestoreModal } from '../webdavRestore';
 import { showImportModal } from '../import';
 import { sendRuntimeMessage } from '../../platform/browser/runtimeMessages';
 import { showConfirm } from '../components/confirmModal';
 import { dbViewedCleanInjectedSourceTags } from '../dbClient';
 import { createBackupArchive, readBackupFileContent } from '../../features/webdavSync/application/backupArchive';
+import { updateSyncStatus, setSyncingStatus } from './syncStatus';
 
 type BackupActionResponse = {
   success?: boolean;
@@ -17,125 +14,6 @@ type BackupActionResponse = {
   error?: string;
 };
 
-const WEBDAV_WARN_LAST_AT_KEY = 'webdav-warn-last-at';
-const WEBDAV_WARN_THROTTLE_MS = 6 * 60 * 60 * 1000;
-
-function updateSyncDisplay(lastSyncTimeElement: HTMLSpanElement, syncIndicator: HTMLDivElement, lastSync: string, warningDays: number): void {
-  const warningBanner = document.getElementById('webdavWarningBanner') as HTMLDivElement;
-  const warningMessage = document.getElementById('webdavWarningMessage') as HTMLDivElement;
-  
-  if (lastSync) {
-    const syncDate = new Date(lastSync);
-    const now = new Date();
-    const rawDiffMs = now.getTime() - syncDate.getTime();
-    const diffMs = Number.isFinite(rawDiffMs) ? Math.max(0, rawDiffMs) : 0;
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    let timeText = '';
-    if (diffDays > 0) timeText = `${diffDays}天前`;
-    else if (diffHours > 0) timeText = `${diffHours}小时前`;
-    else { const diffMinutes = Math.floor(diffMs / (1000 * 60)); timeText = diffMinutes > 0 ? `${diffMinutes}分钟前` : '刚刚'; }
-    lastSyncTimeElement.textContent = timeText;
-    lastSyncTimeElement.title = syncDate.toLocaleString('zh-CN');
-    syncIndicator.className = 'sync-indicator';
-    
-    // 显示/隐藏预警横幅
-    if (warningDays > 0 && diffDays > warningDays) {
-      syncIndicator.classList.add('error');
-      const statusText = syncIndicator.querySelector('.sync-status-text') as HTMLSpanElement | null;
-      if (statusText) statusText.textContent = '需要同步';
-      
-      // 显示预警横幅
-      if (warningBanner && warningMessage) {
-        warningBanner.style.display = 'flex';
-        warningMessage.textContent = `已超过 ${diffDays} 天未备份，建议尽快同步`;
-      }
-    } else {
-      // 隐藏预警横幅
-      if (warningBanner) {
-        warningBanner.style.display = 'none';
-      }
-      
-      if (diffDays > 1) {
-        syncIndicator.classList.add('synced');
-        const statusText = syncIndicator.querySelector('.sync-status-text') as HTMLSpanElement | null;
-        if (statusText) statusText.textContent = '已同步';
-      } else {
-        syncIndicator.classList.add('synced');
-        const statusText = syncIndicator.querySelector('.sync-status-text') as HTMLSpanElement | null;
-        if (statusText) statusText.textContent = '最新';
-      }
-    }
-  } else {
-    lastSyncTimeElement.textContent = '从未';
-    lastSyncTimeElement.title = '尚未进行过同步';
-    syncIndicator.className = 'sync-indicator';
-    const text = syncIndicator.querySelector('.sync-status-text') as HTMLSpanElement | null;
-    if (text) text.textContent = '未同步';
-    
-    // 显示预警横幅（从未备份）
-    if (warningDays > 0 && warningBanner && warningMessage) {
-      syncIndicator.classList.add('error');
-      warningBanner.style.display = 'flex';
-      warningMessage.textContent = '尚未进行过备份，建议立即同步';
-    } else if (warningBanner) {
-      warningBanner.style.display = 'none';
-    }
-  }
-}
-
-async function maybeWarnStaleBackup(diffDays: number, warningDays: number): Promise<void> {
-  try {
-    if (!(warningDays > 0 && diffDays > warningDays)) return;
-    const now = Date.now();
-    const lastAt = await getValue<number>(WEBDAV_WARN_LAST_AT_KEY, 0);
-    if (typeof lastAt === 'number' && lastAt > 0 && lastAt <= now && now - lastAt < WEBDAV_WARN_THROTTLE_MS) return;
-    showMessage(`⚠️ WebDAV 已超过 ${diffDays} 天未备份，建议尽快同步`, 'warn');
-    await setValue(WEBDAV_WARN_LAST_AT_KEY, now);
-  } catch {}
-}
-
-export function updateSyncStatus(): void {
-  try {
-    const lastSyncTimeElement = document.getElementById('lastSyncTime') as HTMLSpanElement;
-    const lastSyncTimeSettings = document.getElementById('last-sync-time') as HTMLSpanElement;
-    const syncIndicator = document.getElementById('syncIndicator') as HTMLDivElement;
-    const webdavSettings = STATE.settings?.webdav || {};
-    const lastSync = webdavSettings.lastSync || '';
-    const warningDays = Number(webdavSettings.warningDays ?? 7);
-    if (lastSyncTimeElement && syncIndicator) {
-      updateSyncDisplay(lastSyncTimeElement, syncIndicator, lastSync, Number.isFinite(warningDays) ? warningDays : 7);
-    }
-    if (lastSyncTimeSettings) {
-      lastSyncTimeSettings.textContent = lastSync ? new Date(lastSync).toLocaleString('zh-CN') : '从未';
-    }
-    if (lastSync && Number.isFinite(warningDays) && warningDays > 0) {
-      const diffMs = Date.now() - new Date(lastSync).getTime();
-      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      // 预警横幅已经在 updateSyncDisplay 中显示，不需要额外的 toast 消息
-    }
-  } catch (error) {
-    console.error('更新同步状态时出错:', error);
-    const lastSyncTimeElement = document.getElementById('lastSyncTime') as HTMLSpanElement;
-    const lastSyncTimeSettings = document.getElementById('last-sync-time') as HTMLSpanElement;
-    const syncIndicator = document.getElementById('syncIndicator') as HTMLDivElement;
-    if (lastSyncTimeElement) lastSyncTimeElement.textContent = '从未';
-    if (lastSyncTimeSettings) lastSyncTimeSettings.textContent = '从未';
-    if (syncIndicator) {
-      syncIndicator.className = 'sync-indicator';
-      const statusText = syncIndicator.querySelector('.sync-status-text');
-      if (statusText) (statusText as HTMLSpanElement).textContent = '未同步';
-    }
-  }
-}
-
-export function setSyncingStatus(isUploading: boolean = false): void {
-  const syncIndicator = document.getElementById('syncIndicator') as HTMLDivElement;
-  if (!syncIndicator) return;
-  syncIndicator.className = 'sync-indicator syncing';
-  const statusText = syncIndicator.querySelector('.sync-status-text') as HTMLSpanElement | null;
-  if (statusText) statusText.textContent = isUploading ? '上传中...' : '同步中...';
-}
 
 function queryBackupElement<T extends HTMLElement>(root: ParentNode, selector: string): T | null {
   return root.querySelector(selector) as T | null;
@@ -255,7 +133,12 @@ export function initBackupActions(root: ParentNode = document): void {
   }
 
   if (syncDownBtn && markBackupActionBound(syncDownBtn, 'Restore')) {
-    syncDownBtn.addEventListener('click', () => { logAsync('INFO', '用户点击“从云端恢复”，打开恢复弹窗'); showWebDAVRestoreModal(); });
+    syncDownBtn.addEventListener('click', async () => {
+      logAsync('INFO', '用户点击“从云端恢复”，打开恢复弹窗');
+      // 动态加载恢复向导：webdavRestore 及其依赖（隐私模块树/webdavSync 应用层）不进 dashboard 入口闭包
+      const { showWebDAVRestoreModal } = await import('../webdavRestore');
+      showWebDAVRestoreModal();
+    });
   }
 
   if (cleanupInjectedSourceTagsBtn && markBackupActionBound(cleanupInjectedSourceTagsBtn, 'CleanupInjectedSourceTags')) {

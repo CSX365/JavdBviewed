@@ -8,7 +8,8 @@
  */
 import { ExtensionSettings, KeywordFilterRule, ActorSyncConfig, NewWorksGlobalConfig } from '../types';
 import { PrivacyConfig } from '../types/privacy';
-import { normalizeDrive115Settings } from '../features/drive115/app';
+// 直接引 runtime 叶子模块，避开 drive115/app barrel，防止 v2 客户端进 dashboard 入口闭包
+import { normalizeDrive115Settings } from '../features/drive115/app/runtime';
 import { DEFAULT_AI_SETTINGS } from '../types/ai';
 import { DEFAULT_SERVER_API_BASE_URL } from '../platform/network/serverEndpointResolver';
 import { createDefaultRouteSettings } from '../features/routeManagement/defaultRoutes';

@@ -4,7 +4,8 @@ import type { ExtensionSettings, VideoRecord, LogEntry } from '../types';
 import { logAsync } from './logger';
 import { showMessage } from './ui/toast';
 import { getDisplayVersionInfo } from '../shared/utils/versionInfo';
-import { dbViewedCount } from './dbClient';
+// dbClient 改为调用点动态 import（S1-C）：dashboard 入口首屏只需用一次 dbViewedCount 判断走哪条记录路径，
+// 动态加载后 dbClient 子树（~22.6KB 源码）不再进 dashboard 入口闭包。
 
 // --- Global State & Utilities ---
 
@@ -127,7 +128,8 @@ export async function initializeGlobalState(): Promise<void> {
 
         STATE.settings = settings;
 
-        const hasIndexedDbRecords = await dbViewedCount()
+        const hasIndexedDbRecords = await import('./dbClient')
+            .then(({ dbViewedCount }) => dbViewedCount())
             .then(count => count > 0)
             .catch(() => false);
         if (hasIndexedDbRecords) {

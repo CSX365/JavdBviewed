@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHomeChartRenderQueue, scheduleHomeChartRender, yieldToBrowser } from './homeRenderScheduler';
+import { createHomeChartRenderQueue, scheduleDeferredRender, scheduleHomeChartRender, yieldToBrowser } from './homeRenderScheduler';
 
 describe('yieldToBrowser', () => {
   it('waits for an animation frame and a macrotask before continuing', async () => {
@@ -87,6 +87,101 @@ describe('createHomeChartRenderQueue', () => {
 
     queue.cancel();
     expect(cancelIdleCallback).toHaveBeenCalledTimes(0);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('scheduleDeferredRender', () => {
+  const fireIdle = (callbacks: IdleRequestCallback[]) => {
+    callbacks.shift()?.({ didTimeout: false, timeRemaining: () => 8 } as IdleDeadline);
+  };
+
+  it('先等满 guardMs 保护窗再进入空闲队列（首屏保护）', () => {
+    const callbacks: IdleRequestCallback[] = [];
+    const requestIdleCallback = vi.fn((cb: IdleRequestCallback) => { callbacks.push(cb); return 1; });
+    const cancelIdleCallback = vi.fn();
+    vi.stubGlobal('requestIdleCallback', requestIdleCallback);
+    vi.stubGlobal('cancelIdleCallback', cancelIdleCallback);
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const task = scheduleDeferredRender(run, { guardMs: 100, timeoutMs: 500 });
+    expect(requestIdleCallback).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(99);
+    expect(run).not.toHaveBeenCalled();
+    expect(requestIdleCallback).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(requestIdleCallback).toHaveBeenCalledTimes(1);
+    expect(requestIdleCallback).toHaveBeenCalledWith(expect.any(Function), { timeout: 500 });
+    fireIdle(callbacks);
+    expect(run).toHaveBeenCalledTimes(1);
+    task.cancel();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('guardMs=0 时直接进入空闲队列（刷新场景）', () => {
+    const callbacks: IdleRequestCallback[] = [];
+    const requestIdleCallback = vi.fn((cb: IdleRequestCallback) => { callbacks.push(cb); return 2; });
+    vi.stubGlobal('requestIdleCallback', requestIdleCallback);
+    vi.stubGlobal('cancelIdleCallback', vi.fn());
+    const run = vi.fn();
+    scheduleDeferredRender(run, { guardMs: 0 });
+    expect(requestIdleCallback).toHaveBeenCalledTimes(1);
+    fireIdle(callbacks);
+    expect(run).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('guard 期内 abort 终止任务（计时器被清掉）', () => {
+    const controller = new AbortController();
+    vi.stubGlobal('requestIdleCallback', undefined);
+    const run = vi.fn();
+    vi.useFakeTimers();
+    scheduleDeferredRender(run, { guardMs: 100, signal: controller.signal });
+    expect(vi.getTimerCount()).toBe(1);
+    controller.abort();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(5000);
+    expect(run).not.toHaveBeenCalled();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('空闲期内 abort 取消空闲任务', () => {
+    const callbacks: IdleRequestCallback[] = [];
+    const requestIdleCallback = vi.fn((cb: IdleRequestCallback) => { callbacks.push(cb); return 3; });
+    const cancelIdleCallback = vi.fn();
+    vi.stubGlobal('requestIdleCallback', requestIdleCallback);
+    vi.stubGlobal('cancelIdleCallback', cancelIdleCallback);
+    const controller = new AbortController();
+    const run = vi.fn();
+    scheduleDeferredRender(run, { guardMs: 0, signal: controller.signal });
+    expect(callbacks.length).toBe(1);
+    controller.abort();
+    expect(cancelIdleCallback).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('signal 已 abort 时任务不会执行', () => {
+    const controller = new AbortController();
+    controller.abort();
+    const run = vi.fn();
+    vi.stubGlobal('requestIdleCallback', vi.fn(() => 4));
+    scheduleDeferredRender(run, { guardMs: 0, signal: controller.signal });
+    expect(run).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('cancel() 后不再执行，即使 guard 到期', () => {
+    vi.stubGlobal('requestIdleCallback', vi.fn(() => 5));
+    const run = vi.fn();
+    vi.useFakeTimers();
+    const task = scheduleDeferredRender(run, { guardMs: 100 });
+    task.cancel();
+    vi.advanceTimersByTime(5000);
+    expect(run).not.toHaveBeenCalled();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 });
