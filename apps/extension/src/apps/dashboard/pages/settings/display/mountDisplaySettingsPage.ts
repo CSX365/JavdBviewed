@@ -9,8 +9,8 @@ import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/moun
 /**
  * 在 #tab-settings 挂载显示设置 React 页（跳过 partial HTML）
  */
-export function mountDisplaySettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountDisplaySettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: DisplaySettingsPage,

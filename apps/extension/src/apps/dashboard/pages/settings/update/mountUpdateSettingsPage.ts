@@ -6,8 +6,8 @@
 import { UpdateSettingsPage } from './UpdateSettingsPage';
 import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/mountReactSettingsPage';
 
-export function mountUpdateSettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountUpdateSettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: UpdateSettingsPage,

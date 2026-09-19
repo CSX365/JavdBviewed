@@ -3,13 +3,16 @@ import { showMessage } from './ui/toast';
 import type { UserProfile } from '../types';
 import { userService } from './services/userService';
 import { emit } from './services/eventBus';
-import { getSettings, saveSettings } from '../utils/storage';
-import { getDrive115V2Service, type Drive115V2UserInfo, type Drive115V2QuotaInfo } from '../features/drive115/v2';
+import { getSettings, saveSettings, getValue } from '../utils/storage';
+import { STORAGE_KEYS } from '../utils/config';
+import { saveSettingsSectionDelta } from '../utils/settingsDelta';
+import type { Drive115V2UserInfo, Drive115V2QuotaInfo } from '../features/drive115/v2';
+// getDrive115V2Service 改为调用点动态 import：115 v2 客户端不再进 dashboard 入口闭包
 import { describe115Error } from '../features/drive115/v2/errorCodes';
 import { showToast } from '../platform/browser/toast';
-import { normalizeDrive115Settings, isDrive115EnabledState } from '../features/drive115/app';
+import { normalizeDrive115Settings, isDrive115EnabledState } from '../features/drive115/app/runtime';
 import { buildDrive115UserInfoFailureCopy } from './userProfileDrive115Feedback';
-import { getJavDBRoute } from '../features/routeManagement';
+// getJavDBRoute 改为调用点动态 import：routeManagement 不再进 dashboard 入口闭包
 
 // 115 加载并发保护
 let isLoadingDrive115 = false;
@@ -257,6 +260,7 @@ async function handleLogin(): Promise<void> {
 async function openJavDBLoginPage(): Promise<void> {
     let loginUrl = 'https://javdb.com/login';
     try {
+        const { getJavDBRoute } = await import('../features/routeManagement');
         const route = await getJavDBRoute();
         const origin = new URL(route).origin;
         loginUrl = `${origin}/login`;
@@ -629,6 +633,7 @@ async function loadDrive115UserInfo(opts?: { allowNetwork?: boolean }): Promise<
             return;
         }
 
+        const { getDrive115V2Service } = await import('../features/drive115/v2');
         const svc = getDrive115V2Service();
         // 仅在允许网络时才真实获取 115 用户信息
         console.debug('[drive115v2-ui] 调用 fetchUserInfoAuto() 获取 115 用户信息（手动）');
@@ -640,9 +645,13 @@ async function loadDrive115UserInfo(opts?: { allowNetwork?: boolean }): Promise<
             set115Status(feedback.inlineStatus, 'warn');
             renderDrive115BasicMessage(basic, feedback.inlineMessage, '#ef6c00', feedback.action);
             showToast(feedback.toastMessage, feedback.toastType);
-            const newSettings: any = { ...settings };
-            newSettings.drive115 = { ...(settings as any).drive115, v2UserInfoExpired: true };
-            await saveSettings(newSettings);
+            // 并发安全（S1-3 写者②）：写前重读原始值，只合并自身 delta（见 utils/settingsDelta.ts）
+            await saveSettingsSectionDelta(
+                { readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined), saveSettings },
+                settings,
+                'drive115',
+                () => ({ v2UserInfoExpired: true }),
+            );
             try { await refreshBtnTooltipFromStorage(); } catch {}
 
         } else {
@@ -650,14 +659,18 @@ async function loadDrive115UserInfo(opts?: { allowNetwork?: boolean }): Promise<
             showToast('已更新 115 用户信息', 'success');
             render115User(userAuto.data, Date.now());
             // 持久化用户信息与时间戳，并清除过期标记
-            const newSettings: any = { ...settings };
-            newSettings.drive115 = {
-                ...(settings as any).drive115,
-                v2UserInfo: userAuto.data,
-                v2UserInfoUpdatedAt: Date.now(),
-                v2UserInfoExpired: false,
-            };
-            await saveSettings(newSettings);
+            // 持久化用户信息与时间戳，并清除过期标记。
+            // 并发安全（S1-3 写者②）：写前重读原始值，只合并自身 delta（见 utils/settingsDelta.ts）
+            await saveSettingsSectionDelta(
+                { readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined), saveSettings },
+                settings,
+                'drive115',
+                () => ({
+                    v2UserInfo: userAuto.data,
+                    v2UserInfoUpdatedAt: Date.now(),
+                    v2UserInfoExpired: false,
+                }),
+            );
             try { await refreshBtnTooltipFromStorage(); } catch {}
         }
 

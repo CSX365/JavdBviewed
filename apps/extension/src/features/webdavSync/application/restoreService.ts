@@ -446,7 +446,7 @@ export async function performRestoreUnified(filename: string, options?: {
     if (opts.autoBackupBeforeRestore) {
       emit?.({ stage: 'autoBackup', status: 'running', message: '正在进行恢复前自动备份...' });
       try {
-        await performWebDAVUpload({ getSettings, saveSettings, logger });
+        await performWebDAVUpload({ getSettings, saveSettings, logger, readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined), });
         emit?.({ stage: 'autoBackup', status: 'done', message: '恢复前自动备份完成' });
       } catch (e: any) {
         logger?.('WARN', 'Auto-backup before restore failed', { error: e?.message });

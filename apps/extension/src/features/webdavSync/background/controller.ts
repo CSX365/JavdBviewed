@@ -438,7 +438,7 @@ async function collectBackupData(): Promise<any> {
 }
 
 async function performUpload(): Promise<{ success: boolean; error?: string }> {
-  return performWebDAVUpload({ getSettings, saveSettings, logger: bgLog });
+  return performWebDAVUpload({ getSettings, saveSettings, logger: bgLog, readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined), });
 }
 
 type WebDAVUploadConfigResult = {
@@ -497,7 +497,7 @@ async function performUploadToConfig(configId: string): Promise<WebDAVUploadConf
     return { configId: safeConfigId, configName, success: false, error: validationError };
   }
 
-  const result = await performWebDAVUpload({ getSettings, saveSettings, logger: bgLog, configId: safeConfigId });
+  const result = await performWebDAVUpload({ getSettings, saveSettings, logger: bgLog, configId: safeConfigId, readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined), });
   return {
     configId: safeConfigId,
     configName,

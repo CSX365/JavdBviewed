@@ -6,8 +6,8 @@
 import { SyncSettingsPage } from './SyncSettingsPage';
 import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/mountReactSettingsPage';
 
-export function mountSyncSettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountSyncSettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: SyncSettingsPage,

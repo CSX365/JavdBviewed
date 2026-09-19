@@ -9,8 +9,8 @@ import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/moun
 /**
  * 在设置宿主挂载网络配置 React 全页
  */
-export function mountNetworkTestSettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountNetworkTestSettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: NetworkTestSettingsPage,

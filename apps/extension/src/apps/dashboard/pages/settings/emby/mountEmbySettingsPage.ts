@@ -6,8 +6,8 @@
 import { EmbySettingsPage } from './EmbySettingsPage';
 import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/mountReactSettingsPage';
 
-export function mountEmbySettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountEmbySettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: EmbySettingsPage,

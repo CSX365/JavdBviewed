@@ -9,8 +9,8 @@ import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/moun
 import '../../../../../dashboard/styles/05-pages/settings/settings.css';
 import '../../../../../dashboard/styles/05-pages/settings/drive115.css';
 
-export function mountDrive115SettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountDrive115SettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: Drive115SettingsPage,

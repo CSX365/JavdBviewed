@@ -14,6 +14,7 @@ import { createBackupArchive } from './backupArchive';
 import { appendWebDAVUploadIndex } from './uploadIndex';
 import { cleanupOldBackups } from './cleanupService';
 import { mergeKnownDevices, type WebDAVKnownDeviceSourceInput } from './deviceRegistry';
+import { saveSettingsSectionDelta } from '../../../utils/settingsDelta';
 
 type WebDAVUploadTarget = {
   configId: string;
@@ -27,6 +28,13 @@ type WebDAVUploadTarget = {
 export interface WebDAVUploadServiceOptions {
   getSettings: () => Promise<any>;
   saveSettings: (settings: any) => Promise<void>;
+  /**
+   * settings 存储原始值读取（不合并默认值）。
+   * 并发安全（S1-3 写者③）：提供后收尾写回基于最新原始值，只合并自身 webdav 节 delta，
+   * 避免把全量 DEFAULT_SETTINGS 推进存储 blob、覆盖上传窗口内的并发写入。
+   * 未提供 / 抛错时保持旧行为（merged 视图重读整对象写回）。
+   */
+  readRawSettings?: () => Promise<Partial<any> | null | undefined>;
   logger?: WebDAVClientLog;
   configId?: string;
 }
@@ -187,38 +195,49 @@ export async function performWebDAVUpload(options: WebDAVUploadServiceOptions): 
       logger?.('WARN', 'Failed to update WebDAV upload index', { error: indexError?.message });
     }
 
-    const updatedSettings = await options.getSettings();
-    if (!updatedSettings.webdav) updatedSettings.webdav = {};
+    // 并发安全（S1-3 写者③）：上传已跨长网络段，写前紧贴重读；
+    // 提供 readRawSettings 时基于原始值只合并自身 webdav 节 delta，
+    // 否则回退旧行为（merged 视图重读整对象写回）。
     const lastSync = new Date().toISOString();
-    if (target.isDefault) {
-      updatedSettings.webdav.lastSync = lastSync;
-    }
-    updatedSettings.webdav.clientLastSeenAt = uploadedAt;
-    updatedSettings.webdav.clientLastSyncAt = uploadedAt;
-    updatedSettings.webdav.clientLastSyncStatus = 'success';
-    updatedSettings.webdav.clientLastUploadId = uploadId;
-    updatedSettings.webdav.knownDevices = mergeKnownDevices(
-      readKnownDevices(updatedSettings.webdav.knownDevices),
-      [{
-        profile: clientProfile,
-        source: buildUploadKnownDeviceSource(target, baseUrl, uploadedAt, uploadId),
-        preferDeviceLabel: true,
-      }],
-      { now: Date.parse(uploadedAt) || Date.now() },
+    const updatedSettings = await saveSettingsSectionDelta(
+      {
+        readRawSettings: options.readRawSettings,
+        getMergedSettings: options.getSettings,
+        saveSettings: (next) => options.saveSettings(next),
+      },
+      null,
+      'webdav',
+      (latestWebdav) => {
+        const nextWebdav: any = { ...latestWebdav };
+        if (target.isDefault) {
+          nextWebdav.lastSync = lastSync;
+        }
+        nextWebdav.clientLastSeenAt = uploadedAt;
+        nextWebdav.clientLastSyncAt = uploadedAt;
+        nextWebdav.clientLastSyncStatus = 'success';
+        nextWebdav.clientLastUploadId = uploadId;
+        nextWebdav.knownDevices = mergeKnownDevices(
+          readKnownDevices(nextWebdav.knownDevices),
+          [{
+            profile: clientProfile,
+            source: buildUploadKnownDeviceSource(target, baseUrl, uploadedAt, uploadId),
+            preferDeviceLabel: true,
+          }],
+          { now: Date.parse(uploadedAt) || Date.now() },
+        );
+        if (target.configId && nextWebdav.configs) {
+          const configIndex = nextWebdav.configs.findIndex((c: { id: string }) => c.id === target.configId);
+          if (configIndex !== -1) {
+            nextWebdav.configs = nextWebdav.configs.map((c: any, i: number) => (i === configIndex ? { ...c, lastSync } : c));
+          }
+        }
+        return nextWebdav;
+      },
     );
-
-    if (target.configId && updatedSettings.webdav.configs) {
-      const configIndex = updatedSettings.webdav.configs.findIndex((c: { id: string }) => c.id === target.configId);
-      if (configIndex !== -1) {
-        updatedSettings.webdav.configs[configIndex].lastSync = lastSync;
-      }
-    }
-
-    await options.saveSettings(updatedSettings);
     logger?.('INFO', 'WebDAV upload successful, updated last sync time.');
 
     try {
-      const retentionCount = Number(updatedSettings.webdav.retentionDays ?? 10);
+      const retentionCount = Number((updatedSettings.webdav as any)?.retentionDays ?? 10);
       if (target.isDefault && !isNaN(retentionCount) && retentionCount > 0) {
         await cleanupOldBackups(retentionCount, { getSettings: options.getSettings, logger });
       }

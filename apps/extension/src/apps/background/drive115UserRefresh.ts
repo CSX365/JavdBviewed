@@ -4,7 +4,9 @@
  * @module apps/background
  */
 import { hasDrive115V2Credentials, isDrive115EnabledState, normalizeDrive115Settings } from '../../features/drive115/app';
-import { getSettings, saveSettings } from '../../utils/storage';
+import { getSettings, saveSettings, getValue } from '../../utils/storage';
+import { STORAGE_KEYS } from '../../utils/config';
+import { saveSettingsSectionDelta } from '../../utils/settingsDelta';
 
 export const DRIVE115_USER_REFRESH_ALARM = 'drive115.daily_user_refresh';
 
@@ -46,15 +48,22 @@ export async function backgroundRefreshDrive115UserInfo(): Promise<void> {
       return;
     }
 
-    const latest = await getSettings();
-    const ns: any = { ...(latest || {}) };
-    ns.drive115 = {
-      ...((latest as any)?.drive115 || {}),
-      v2UserInfo: result.data,
-      v2UserInfoUpdatedAt: Date.now(),
-      v2UserInfoExpired: false,
-    };
-    await saveSettings(ns);
+    // 并发安全（S1-3 卫生项）：写回基于原始值重读 + 只合并自身 delta，
+    // 避免把 merged 视图的全量 DEFAULT_SETTINGS 实例推进存储 blob
+    await saveSettingsSectionDelta(
+      {
+        readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined),
+        getMergedSettings: () => getSettings(),
+        saveSettings,
+      },
+      null,
+      'drive115',
+      () => ({
+        v2UserInfo: result.data,
+        v2UserInfoUpdatedAt: Date.now(),
+        v2UserInfoExpired: false,
+      }),
+    );
 
     console.info('[Background] 115 后台刷新用户信息成功，已持久化');
     await broadcastDrive115RefreshUserInfo();

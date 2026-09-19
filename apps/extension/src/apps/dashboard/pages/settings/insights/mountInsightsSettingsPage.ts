@@ -6,8 +6,8 @@
 import { InsightsSettingsPage } from './InsightsSettingsPage';
 import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/mountReactSettingsPage';
 
-export function mountInsightsSettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountInsightsSettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: InsightsSettingsPage,

@@ -6,8 +6,8 @@
 import { PrivacySettingsPage } from './PrivacySettingsPage';
 import { mountReactSettingsPage, unmountReactSettingsPage } from '../shared/mountReactSettingsPage';
 
-export function mountPrivacySettingsPage(hostSelector = '#tab-settings'): void {
-  mountReactSettingsPage({
+export async function mountPrivacySettingsPage(hostSelector = '#tab-settings'): Promise<void> {
+  await mountReactSettingsPage({
     hostSelector,
     kind: 'subpage',
     element: PrivacySettingsPage,

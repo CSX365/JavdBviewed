@@ -10,6 +10,36 @@ import { getSettings, saveSettings } from '../../../../../utils/storage';
 export { getSettings, saveSettings };
 
 /**
+ * 模块级待写链：任一时刻只有一个设置页处于激活态。
+ * 前一个页面的卸载 flush（卸载时补写最后防抖值）与下一个页面的挂载读
+ * 存在竞态：后者可能先读到旧值。挂载流通过 awaitPendingSettingsPersist
+ * 等待本链 settle 后再读，消除该竞态。
+ */
+let pendingSettingsPersist: Promise<unknown> = Promise.resolve();
+
+/**
+ * 等待模块级待写链 settle（超时 fail-open）。
+ * 供设置子页挂载流（mountReactSettingsPage）在卸载旧页后、挂载新页前调用，
+ * 保证新页挂载读不会读到旧页卸载 flush 尚未落盘的旧值。
+ * 超时后重置链：避免单个挂起的 persist 卡死后续所有设置写入。
+ */
+export async function awaitPendingSettingsPersist(timeoutMs = 1500): Promise<void> {
+  const target = pendingSettingsPersist;
+  const settled = await Promise.race([
+    target.then(
+      () => true,
+      () => true,
+    ),
+    new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), timeoutMs);
+    }),
+  ]);
+  if (!settled) {
+    pendingSettingsPersist = Promise.resolve();
+  }
+}
+
+/**
  * 同步 dashboard STATE.settings，避免与遗留面板状态脱节
  */
 export async function syncDashboardState(settings: ExtensionSettings): Promise<void> {
@@ -56,14 +86,15 @@ export function useDebouncedSettingsSave<T, TResult = void>(
   const { delayMs, persist } = options;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<{ value: T } | null>(null);
-  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mountedRef = useRef(true);
   const persistRef = useRef(persist);
   persistRef.current = persist;
 
+  // 走模块级待写链（而非组件级 ref）：卸载 flush 入队后，
+  // 下一个页面的挂载流才能从组件外部 await 到这次写入。
   const enqueuePersist = useCallback((value: T): Promise<TResult> => {
-    const operation = persistQueueRef.current.then(() => persistRef.current(value));
-    persistQueueRef.current = operation.then(
+    const operation = pendingSettingsPersist.then(() => persistRef.current(value)) as Promise<TResult>;
+    pendingSettingsPersist = operation.then(
       () => undefined,
       () => undefined,
     );

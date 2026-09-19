@@ -3,7 +3,9 @@
  * @description 115 网盘集成（磁力推送、文件管理）统一导出
  * @module features/drive115
  */
-import { getSettings, saveSettings } from '../../../utils/storage';
+import { getSettings, saveSettings, getValue } from '../../../utils/storage';
+import { STORAGE_KEYS } from '../../../utils/config';
+import { saveSettingsSectionDelta } from '../../../utils/settingsDelta';
 import { describe115Error } from './errorCodes';
 import { addLogV2 } from './logs';
 import {
@@ -825,31 +827,46 @@ class Drive115V2Service {
       return { success: false, message: msg };
     }
 
-    // 持久化新的 token 与最近刷新时间
+    // 持久化新的 token 与最近刷新时间。
+    // 并发安全（S1-3 写者①）：函数入口的 `settings` 是陈旧快照，入口读与此刻之间
+    // 跨过了 `await refreshToken(...)` 网络段，其他上下文的并发写（用户保存设置、
+    // webdav 身份补写、115 用户信息刷新等）会被旧对象整对象写回覆盖。
+    // 这里写前紧贴重读原始存储值（不合并默认值），只在其上合并自身 drive115 节的
+    // delta 写回，避免把整份 DEFAULT_SETTINGS 实例推进存储 blob；
+    // 原始读不可用（抛错）时退回旧行为（入口快照整对象写回），保证可用性
+    // （原语见 utils/settingsDelta.ts）。
     const newAt = ret.token.access_token || '';
     const newRt = ret.token.refresh_token || refreshToken;
     const newExp = typeof ret.token.expires_at === 'number' ? ret.token.expires_at : null;
-    const newSettings: any = { ...(settings || {}) };
-    newSettings.drive115 = { ...(settings?.drive115 || {}) };
-    newSettings.drive115.v2AccessToken = newAt;
-    newSettings.drive115.v2RefreshToken = newRt;
-    newSettings.drive115.v2TokenExpiresAt = newExp;
-    newSettings.drive115.v2LastTokenRefreshAtSec = nowSec;
-    newSettings.drive115.v2RefreshTokenIssuedAtSec = nowSec;
-    // 保存时进行范围保护（60-120）
-    newSettings.drive115.v2MinRefreshIntervalMin = Math.min(120, Math.max(60, Number(newSettings.drive115.v2MinRefreshIntervalMin ?? cfgMinMin) || cfgMinMin));
-    // 刷新历史：更新并限制长度（仅保留最近 20 条）
-    try {
-      const histRaw2: any[] = Array.isArray(newSettings.drive115.v2TokenRefreshHistorySec) ? newSettings.drive115.v2TokenRefreshHistorySec : hist;
-      const updated = [...histRaw2, nowSec]
-        .map(v => Number(v))
-        .filter(v => Number.isFinite(v) && v > 0 && (nowSec - v) <= 86400);
-      newSettings.drive115.v2TokenRefreshHistorySec = updated.slice(-20);
-      // 固定上限 3，不再从设置读取
-      newSettings.drive115.v2MaxRefreshPer2h = maxPer2h;
-    } catch {}
-    await saveSettings(newSettings);
-    await addLogV2({ timestamp: Date.now(), level: 'info', message: `自动刷新 access_token 成功并已持久化（v2），记录时间戳=${nowSec}，限频=${newSettings.drive115.v2MinRefreshIntervalMin}分钟` });
+    const persisted = await saveSettingsSectionDelta(
+      {
+        readRawSettings: () => getValue<any>(STORAGE_KEYS.SETTINGS, undefined),
+        saveSettings: (next) => saveSettings(next),
+      },
+      settings,
+      'drive115',
+      (latestDrv) => {
+        // 刷新历史：以最新原始值里的历史为准（缺失时回退入口快照的过滤结果），
+        // 追加本次刷新时间戳，仅保留最近 1 天内记录并限制最近 20 条
+        const histSource: any[] = Array.isArray(latestDrv.v2TokenRefreshHistorySec) ? latestDrv.v2TokenRefreshHistorySec : hist;
+        const updatedHist = [...histSource, nowSec]
+          .map(v => Number(v))
+          .filter(v => Number.isFinite(v) && v > 0 && (nowSec - v) <= 86400);
+        return {
+          v2AccessToken: newAt,
+          v2RefreshToken: newRt,
+          v2TokenExpiresAt: newExp,
+          v2LastTokenRefreshAtSec: nowSec,
+          v2RefreshTokenIssuedAtSec: nowSec,
+          // 保存时进行范围保护（60-120），取值以最新原始值为准
+          v2MinRefreshIntervalMin: Math.min(120, Math.max(60, Number(latestDrv.v2MinRefreshIntervalMin ?? cfgMinMin) || cfgMinMin)),
+          v2TokenRefreshHistorySec: updatedHist.slice(-20),
+          // 固定上限 3，不再从设置读取
+          v2MaxRefreshPer2h: maxPer2h,
+        };
+      },
+    );
+    await addLogV2({ timestamp: Date.now(), level: 'info', message: `自动刷新 access_token 成功并已持久化（v2），记录时间戳=${nowSec}，限频=${(persisted.drive115 as any).v2MinRefreshIntervalMin}分钟` });
 
     return { success: true, accessToken: newAt };
   }
