@@ -3,7 +3,7 @@
  * @description resolveTaskBucket 翻译桶与通用映射单测
  */
 import { describe, expect, it } from 'vitest';
-import { resolveTaskBucket, resolveTaskLeaseGroup, TASK_BUCKET_LIMITS } from './taskPolicy';
+import { isHeavyTaskPhase, resolveTaskBucket, resolveTaskLeaseGroup, TASK_BUCKET_LIMITS, TASK_GLOBAL_HEAVY_LIMITS } from './taskPolicy';
 
 describe('resolveTaskBucket', () => {
   it('routes real translation API labels to translate bucket', () => {
@@ -51,5 +51,14 @@ describe('resolveTaskBucket', () => {
   it('keeps core status synchronization serialized in every scheduling mode', () => {
     expect(resolveTaskLeaseGroup('videoStatus:initialSync', 'background_allowed')).toBe('source-page-heavy');
     expect(resolveTaskLeaseGroup('videoStatus:initialSync', 'foreground_first')).toBe('source-page-heavy');
+  });
+
+  it('classifies critical/high phases as heavy (S1-2b)', () => {
+    expect(isHeavyTaskPhase('critical')).toBe(true);
+    expect(isHeavyTaskPhase('high')).toBe(true);
+    expect(isHeavyTaskPhase('deferred')).toBe(false);
+    expect(isHeavyTaskPhase('idle')).toBe(false);
+    expect(isHeavyTaskPhase(undefined)).toBe(false);
+    expect(TASK_GLOBAL_HEAVY_LIMITS).toEqual({ hiddenHeavy: 2, totalHeavy: 4 });
   });
 });

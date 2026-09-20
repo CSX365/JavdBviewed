@@ -7,6 +7,7 @@ describe('task wait policy', () => {
     expect(isDeferredTaskWaitReason('global-budget')).toBe(true);
     expect(isDeferredTaskWaitReason('background-page-budget')).toBe(true);
     expect(isDeferredTaskWaitReason('source-page-heavy-budget')).toBe(true);
+    expect(isDeferredTaskWaitReason('global-heavy-budget')).toBe(true);
   });
 
   it('does not classify a lease timeout as deferred', () => {
@@ -15,6 +16,7 @@ describe('task wait policy', () => {
 
   it('distinguishes capacity waits from a hidden tab', () => {
     expect(isTaskLeaseAvailabilityWaitReason('source-page-heavy-budget')).toBe(true);
+    expect(isTaskLeaseAvailabilityWaitReason('global-heavy-budget')).toBe(true);
     expect(isTaskLeaseAvailabilityWaitReason('higher-priority-wait')).toBe(true);
     expect(isTaskLeaseAvailabilityWaitReason('tab-hidden')).toBe(false);
   });

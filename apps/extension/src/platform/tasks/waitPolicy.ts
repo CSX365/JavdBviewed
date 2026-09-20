@@ -9,6 +9,7 @@ export function isDeferredTaskWaitReason(reason: string): boolean {
     || reason === 'background-page-budget'
     || reason === 'smart-background-page-budget'
     || reason === 'source-page-heavy-budget'
+    || reason === 'global-heavy-budget'
     || reason.startsWith('bucket:');
 }
 
@@ -37,5 +38,6 @@ export function isTaskLeaseAvailabilityWaitReason(reason: string): boolean {
     || reason === 'background-page-budget'
     || reason === 'smart-background-page-budget'
     || reason === 'source-page-heavy-budget'
+    || reason === 'global-heavy-budget'
     || reason.startsWith('bucket:');
 }

@@ -52,6 +52,27 @@ export const TASK_LEASE_GROUP_LIMITS: Record<string, number> = {
   'source-page-heavy': 1,
 };
 
+/**
+ * S1-2b (cycle-11): 全局重相位（critical/high）并发槽。
+ *
+ * 真机基线（/tmp/c11s01 s5/s6）：15+ 页场景下后台列表/详情页的 critical/high 任务
+ * （listEnhancement:init、superRankingNav:init、videoStatus 同步等，均为大 DOM 读写）
+ * 可在全局租约预算内同时执行 3~6 个，主线程长帧 2.3~2.7s、浏览器整体卡顿。
+ * 通用全局预算按「所有任务」计数，挡不住重任务叠加，这里对重相位单独设限：
+ * - hiddenHeavy：后台（hidden tab）允许同时在跑的重租约上限 —— 保护前台主线程
+ * - totalHeavy：全部 tab 允许同时在跑的重租约上限 —— 保护浏览器整体
+ * 仅约束「请求方本身是重相位」的任务，轻相位（deferred/idle，多为 API 调用）不受影响。
+ */
+export const TASK_GLOBAL_HEAVY_LIMITS = {
+  hiddenHeavy: 2,
+  totalHeavy: 4,
+} as const;
+
+/** 重相位判定：critical/high 阶段任务会执行大块 DOM 读写，占用主线程明显 */
+export function isHeavyTaskPhase(phase?: string): boolean {
+  return phase === 'critical' || phase === 'high';
+}
+
 /** 源页同步链主任务（恒属 source-page-heavy 组，phase 为 critical/deferred） */
 export function isSourcePageSyncLabel(label: string): boolean {
   return label === 'videoStatus:initialSync' || label === 'videoStatus:fullRefresh';

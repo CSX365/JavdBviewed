@@ -17,8 +17,10 @@ import {
   TASK_PAGE_LEASE_LIMITS,
   TASK_SMART_BACKGROUND_PREWARM_LIMITS,
   isSourcePageSyncLabel,
+  isHeavyTaskPhase,
   resolveTaskBucket,
   resolveTaskLeaseGroup,
+  TASK_GLOBAL_HEAVY_LIMITS,
 } from './taskPolicy';
 import { TaskStateStore } from './taskStateStore';
 import { TASK_CENTER_MESSAGE } from '../../shared/taskCenterProtocol';
@@ -508,6 +510,26 @@ export class GlobalTaskCenter {
   }
 
   /**
+   * S1-2b (cycle-11): 统计重相位（critical/high）active 租约数。
+   * filterVisible：true=仅可见 tab，false=仅后台 tab，undefined=全部 tab。
+   */
+  private getActiveHeavyLeaseCount(filterVisible?: boolean): number {
+    const now = Date.now();
+    return this.store.listTasks().filter((record) => {
+      if (!isHeavyTaskPhase(record.descriptor.phase)) return false;
+      if (filterVisible !== undefined && this.store.isTabVisible(record.descriptor.tabId) !== filterVisible) return false;
+      const disposition = computeTaskDisposition({
+        status: record.runtime.status,
+        heartbeatTs: record.runtime.heartbeatTs,
+        timeoutMs: record.descriptor.timeoutMs,
+        now,
+      });
+      return disposition === 'active'
+        && (record.runtime.status === 'leased' || record.runtime.status === 'running');
+    }).length;
+  }
+
+  /**
    * F2 (cycle-7): 是否存在排队中的源页同步链任务（videoStatus:initialSync/fullRefresh）。
    * 排除 tab-hidden 暂缓态（该页不参与前台调度，预热任务同为后台节流，无冲突）。
    *
@@ -911,6 +933,26 @@ export class GlobalTaskCenter {
       task.runtime.waitReason = `${leaseGroup}-budget`;
       this.store.setTask(taskId, task);
       return { granted: false, waitReason: task.runtime.waitReason };
+    }
+    // S1-2b (cycle-11): 全局重相位并发槽 —— 仅约束重相位（critical/high，大 DOM 读写）请求方：
+    // - 可见页请求：后台（hidden）重租约在跑 ≥ hiddenHeavy(2) → 排队等 global-heavy-budget，
+    //   前台重任务不与 2 个以上后台重任务并发，保护前台主线程；
+    // - 后台页请求：全 tab 重租约在跑 ≥ totalHeavy(4) → 同上，封顶浏览器整体重并发。
+    // 放在授予前最后一段：不改变既有判定顺序与 waitReason 优先级；释放时 notifyLeaseWaiters
+    // 会照常唤醒排队页（与既有预算一致，hidden 页走指数退避、可见页 400ms 重试）。
+    if (isHeavyTaskPhase(task.descriptor.phase)) {
+      const activeHeavyLeaseCount = visible
+        ? this.getActiveHeavyLeaseCount(false)
+        : this.getActiveHeavyLeaseCount();
+      const heavyLimit = visible
+        ? TASK_GLOBAL_HEAVY_LIMITS.hiddenHeavy
+        : TASK_GLOBAL_HEAVY_LIMITS.totalHeavy;
+      if (activeHeavyLeaseCount >= heavyLimit) {
+        task.runtime.status = 'queued';
+        task.runtime.waitReason = 'global-heavy-budget';
+        this.store.setTask(taskId, task);
+        return { granted: false, waitReason: task.runtime.waitReason };
+      }
     }
     task.runtime.status = 'leased';
     task.runtime.waitReason = undefined;
