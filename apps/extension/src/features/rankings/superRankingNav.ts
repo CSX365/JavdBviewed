@@ -53,6 +53,12 @@ const ORIGINAL_LINK_HTML_ATTR = 'jdbSuperRankingOriginalHtml';
 const ORIGINAL_DROPDOWN_HTML_ATTR = 'jdbSuperRankingOriginalHtml';
 const ORIGINAL_FC2_HREF_ATTR = 'jdbSuperRankingOriginalFc2Href';
 let activeSupportedHost = '';
+// S1-2a：导航增强对 MPA 静态 navbar 只需完整跑一次；完成后 mutation 回调不再重复
+// 全文档扫描 + 逐链接 textContent 读（列表增强爆发期每批 mutation 都会触发，是长帧放大器）。
+let navApplied = false;
+// S1-2a：上次 FC2 链接改写时的锚点数；数量不变即跳过全文档扫描。
+// bfcache 恢复/开关重启用时置 null 强制重扫。
+let lastFc2AnchorCount: number | null = null;
 
 type SuperRankingMovie = {
   id?: string;
@@ -536,6 +542,7 @@ export async function handleSuperRankingPage(): Promise<boolean> {
 function refreshSuperRankingNav(hostname = activeSupportedHost || window.location.hostname): void {
   if (!isSuperRankingSupportedHost(hostname)) return;
   injectStyles();
+  lastFc2AnchorCount = null;
   applySuperRankingNav();
   rewriteNativeFc2Links();
   void handleSuperRankingPage().catch((error) => {
@@ -589,7 +596,10 @@ function renderRankingDropdown(dropdown: HTMLElement): void {
 }
 
 function rewriteNativeFc2Links(): void {
-  document.querySelectorAll<HTMLAnchorElement>('.tabs a[href], .navbar-item[href]').forEach((anchor) => {
+  const anchors = document.querySelectorAll<HTMLAnchorElement>('.tabs a[href], .navbar-item[href]');
+  if (lastFc2AnchorCount === anchors.length) return;
+  lastFc2AnchorCount = anchors.length;
+  anchors.forEach((anchor) => {
     if (normalizeText(anchor.textContent) !== 'FC2') return;
     if (anchor.dataset[ORIGINAL_FC2_HREF_ATTR] === undefined) {
       anchor.dataset[ORIGINAL_FC2_HREF_ATTR] = anchor.getAttribute('href') || '';
@@ -803,7 +813,8 @@ export function initializeSuperRankingNav(hostname = window.location.hostname): 
 
   try {
     injectStyles();
-    applySuperRankingNav();
+    navApplied = applySuperRankingNav();
+    lastFc2AnchorCount = null;
     rewriteNativeFc2Links();
     bindOutsideClick();
     bindRestoreListeners();
@@ -824,7 +835,10 @@ export function initializeSuperRankingNav(hostname = window.location.hostname): 
     oldObserver?.disconnect();
 
     const observer = new MutationObserver(() => {
-      applySuperRankingNav();
+      // 导航增强只跑一次（MPA 页内 navbar 静态）；未完成时继续等 DOM 就绪。
+      if (!navApplied) {
+        navApplied = applySuperRankingNav();
+      }
       rewriteNativeFc2Links();
     });
     observer.observe(document.documentElement, {
@@ -838,6 +852,8 @@ export function initializeSuperRankingNav(hostname = window.location.hostname): 
 }
 
 export function destroySuperRankingNav(): void {
+  navApplied = false;
+  lastFc2AnchorCount = null;
   const observer = (window as any)[OBSERVER_KEY] as MutationObserver | undefined;
   observer?.disconnect();
   delete (window as any)[OBSERVER_KEY];

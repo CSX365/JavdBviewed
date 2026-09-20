@@ -27,6 +27,13 @@ import {
     setHidingSource,
     readListHidingEnablement,
 } from '../../list-hiding';
+import {
+    DEFAULT_EXISTING_ITEMS_CHUNK_SIZE,
+    defaultScheduleIdle,
+} from './existingItemsScheduler';
+
+/** processListItems per-card 同步段分块大小（S1-2a，与 S1-1b 冷启动 enhance 分块同值）。 */
+const LIST_PROCESS_CHUNK_SIZE = DEFAULT_EXISTING_ITEMS_CHUNK_SIZE;
 
 export function processVisibleItems(options: ListProcessingOptions = {}): void {
     // 首先检查页面是否正常加载
@@ -94,27 +101,45 @@ export function processListItems(items: readonly HTMLElement[], options: ListPro
         }
     }
 
-    const visibleCodes: string[] = [];
-    itemsToProcess.forEach((item) => {
-        const videoId = processItem(item);
-        if (videoId && item.style.display !== 'none') {
-            visibleCodes.push(videoId);
-        }
-    });
-
-    embyLibraryRealtimeCheckQueue.enqueue(
-        visibleCodes,
-        buildRealtimeCheckConfig(STATE.settings),
-    );
-
     const resourceTagsEnabled = (STATE.settings as any)?.listEnhancement?.resourceTags === true;
-    void renderResourceTagsForItems(
-        itemsToProcess.map((item) => ({
-            item,
-            videoId: item.querySelector<HTMLElement>(SELECTORS.VIDEO_ID)?.textContent?.trim() || '',
-        })).filter(({ videoId }) => Boolean(videoId)),
-        resourceTagsEnabled,
-    ).catch((error) => log('Failed to render list resource tags:', error));
+
+    // S1-2a：per-card 同步段分块。processItem 每张卡约 30 次 DOM 读写（清旧标签/状态标签/
+    // 快捷操作/库徽章/VR 检测/显隐重算），24 张同步循环在 16 tab 争用下被拉伸成 0.3-2.4s
+    // 长帧（s6 实测）。首块同步保持确定性，后续块 rIC(500ms 兜底)让出主线程。
+    // emby 实时检查走 Set+600ms debounce 队列、资源标签索引按批读，逐块增量提交语义不变。
+    let chunkIndex = 0;
+    const processChunk = (): void => {
+        const end = Math.min(chunkIndex + LIST_PROCESS_CHUNK_SIZE, itemsToProcess.length);
+        const chunkItems = itemsToProcess.slice(chunkIndex, end);
+        chunkIndex = end;
+
+        const visibleCodes: string[] = [];
+        chunkItems.forEach((item) => {
+            const videoId = processItem(item);
+            if (videoId && item.style.display !== 'none') {
+                visibleCodes.push(videoId);
+            }
+        });
+
+        embyLibraryRealtimeCheckQueue.enqueue(
+            visibleCodes,
+            buildRealtimeCheckConfig(STATE.settings),
+        );
+
+        void renderResourceTagsForItems(
+            chunkItems.map((item) => ({
+                item,
+                videoId: item.querySelector<HTMLElement>(SELECTORS.VIDEO_ID)?.textContent?.trim() || '',
+            })).filter(({ videoId }) => Boolean(videoId)),
+            resourceTagsEnabled,
+        ).catch((error) => log('Failed to render list resource tags:', error));
+
+        if (chunkIndex < itemsToProcess.length) {
+            defaultScheduleIdle(processChunk);
+        }
+    };
+
+    processChunk();
 }
 
 export function setupObserver(): void {
