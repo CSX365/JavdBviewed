@@ -59,6 +59,8 @@ interface CachedEntry {
   s: number;
   h: [string, string][];
   b: string; // base64
+  /** 新记录恒为 'b64'；历史缓存缺省（内容自判断） */
+  enc?: 'b64';
 }
 
 /** 不参与回放的 scheme（扩展自身资源/浏览器内部） */
@@ -79,6 +81,23 @@ function cacheEntryPath(cacheDir: string, key: string): string {
 const SKIP_HEADERS = new Set([
   'set-cookie', 'set-cookie2', 'connection', 'keep-alive', 'transfer-encoding', 'content-length',
 ]);
+
+/** 归一化缓存 body 为 base64（fulfillRequest.body 只收 base64，非 base64 会被 CDP schema 校验拒：
+ *  "Protocol error (Fetch.fulfillRequest): Invalid parameters"）。
+ *  历史缓存两种格式混存：record 路径存过解码后原文（文本响应），captureDocument 路径存 base64；
+ *  knownB64=true 直接信任，否则按内容判断（真实文本几乎必含 base64 字母表外字符）。 */
+const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+function toBase64Body(b: string, knownB64 = false): string {
+  if (knownB64) return b;
+  if (b.length % 4 === 0 && b.length > 0 && B64_RE.test(b)) return b;
+  return Buffer.from(b, 'utf8').toString('base64');
+}
+
+/** CDP 不允许响应头值含控制字符（实测 Cloudflare 的 server-timing/vary 值带真实换行符），
+ *  直接 fulfillRequest 会被 schema 校验拒（Invalid parameters，仅主文档中招）。存盘与回放前统一清洗。 */
+function cleanHeaderPair(name: string, value: string): [string, string] {
+  return [name, value.replace(/[\x00-\x1f\x7f]/g, ' ')];
+}
 
 export class ReplaySession {
   private readonly opts: ReplayOptions;
@@ -195,16 +214,20 @@ export class ReplaySession {
     void this.readCache(key).then(async (entry) => {
       if (this.opts.mode === 'replay' && entry) {
         this.stats.hits += 1;
-        this.stats.hitBytes += Buffer.byteLength(entry.b, 'base64');
+        const bodyB64 = toBase64Body(entry.b, entry.enc === 'b64');
+        this.stats.hitBytes += Buffer.byteLength(bodyB64, 'base64');
         const headers = (entry.h ?? [])
           .filter(([n]) => !SKIP_HEADERS.has(n.toLowerCase()))
-          .map(([name, value]) => ({ name, value }));
+          .map(([name, value]) => {
+            const [cn, cv] = cleanHeaderPair(name, value);
+            return { name: cn, value: cv };
+          });
         try {
           await this.cdp.send('Fetch.fulfillRequest', {
             requestId,
             responseCode: entry.s || 200,
             responseHeaders: headers,
-            body: entry.b,
+            body: bodyB64,
           });
           return;
         } catch (e) {
@@ -231,12 +254,12 @@ export class ReplaySession {
     if (!info || !isReplayable(info.url)) return;
     void this.cdp.send('Network.getResponseBody', { requestId }).then((r: { body: string; base64Encoded: boolean }) => {
       const maxBytes = this.opts.maxRecordBytes ?? 30 * 1024 * 1024;
-      const bytes = r.base64Encoded ? Buffer.byteLength(r.body, 'base64') : r.body.length;
+      const bytes = r.base64Encoded ? Buffer.byteLength(r.body, 'base64') : Buffer.byteLength(r.body, 'utf8');
       if (bytes > maxBytes) return; // 大资源不缓存
       // headers 来自最近一次 responseReceived 的缓存（见 onResponseReceived 里存的 docHeaders）
       const headers = (this.lastHeaders.get(requestId) ?? []) as [string, string][];
       const status = this.lastStatus.get(requestId) ?? 200;
-      this.writeCache(info.key, { m: info.method, u: info.url, s: status, h: headers, b: r.body });
+      this.writeCache(info.key, { m: info.method, u: info.url, s: status, h: headers, b: toBase64Body(r.body, r.base64Encoded), enc: 'b64' });
     }).catch((e: unknown) => {
       this.stats.recordFail += 1;
       this.opts.log?.(`[replay:${this.label}] Network.getResponseBody 失败 ${info.url.slice(0, 90)}: ${String(e).slice(0, 120)}`);
@@ -265,7 +288,7 @@ export class ReplaySession {
         this.opts.log?.(`[replay:${this.label}] 兜底 fetch 非 2xx：${url.slice(0, 80)} status=${res.status}`);
         return;
       }
-      const entry: CachedEntry = { m: 'GET', u: url, s: res.status, h: res.headers, b: Buffer.from(res.text, 'utf8').toString('base64') };
+      const entry: CachedEntry = { m: 'GET', u: url, s: res.status, h: res.headers.map(([n, v]) => cleanHeaderPair(n, String(v))), b: Buffer.from(res.text, 'utf8').toString('base64'), enc: 'b64' };
       this.writeCache(key, entry);
     } catch (e) {
       this.opts.log?.(`[replay:${this.label}] 兜底 fetch 失败 ${url.slice(0, 80)}: ${String(e).slice(0, 120)}`);
@@ -283,7 +306,7 @@ export class ReplaySession {
     void this.cdp.send('Fetch.getResponseBody', { requestId: p.requestId }).then((r: { body: string; base64Encoded: boolean }) => {
       const bytes = r.base64Encoded ? Buffer.byteLength(r.body, 'base64') : r.body.length;
       if (bytes > maxBytes) return; // 大资源不缓存
-      const headers: [string, string][] = Object.entries(p.response.headers ?? {}).map(([n, v]) => [n, String(v)]);
+      const headers: [string, string][] = Object.entries(p.response.headers ?? {}).map(([n, v]) => cleanHeaderPair(n, String(v)));
       this.writeCache(info.key, { m: info.method, u: info.url, s: p.response.status, h: headers, b: r.body });
     }).catch((e: unknown) => {
       this.stats.recordFail += 1;
@@ -299,7 +322,7 @@ export class ReplaySession {
     const info = this.reqInfo.get(p.requestId);
     if (!info || !isReplayable(p.response.url)) return;
     this.lastStatus.set(p.requestId, p.response.status);
-    this.lastHeaders.set(p.requestId, Object.entries(p.response.headers ?? {}).map(([n, v]) => [n, String(v)]));
+    this.lastHeaders.set(p.requestId, Object.entries(p.response.headers ?? {}).map(([n, v]) => cleanHeaderPair(n, String(v))));
     // 小资源常在 responseReceived 时 body 已就绪；主文档大资源此时通常未就绪，
     // loadingFinished 路径会再取一次（first-write-wins 去重）
     this.captureBody(p.requestId);

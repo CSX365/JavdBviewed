@@ -60,6 +60,8 @@ interface Args {
   pages: 'list' | 'detail';
   tabs: number;
   listPage: string;
+  detailUrls?: string[];
+  activeList?: boolean;
   proxy?: string;
   replay?: string;
   replayRecord: boolean;
@@ -108,6 +110,11 @@ interface HookLoaf {
   pause: number;
 }
 
+interface HookLongtask {
+  t: number;
+  dur: number;
+}
+
 interface HookData {
   installT: number;
   installRs: string;
@@ -119,6 +126,7 @@ interface HookData {
   domEvents: HookDomEvent[];
   cssom: HookCssomSample[];
   loaf: HookLoaf[];
+  longtasks: HookLongtask[];
   marker: string | null;
   err: string | null;
 }
@@ -139,6 +147,7 @@ const PROBE_HOOK_SRC = `(() => {
     domEvents: [],
     cssom: [],
     loaf: [],
+    longtasks: [],
     marker: null,
     err: null,
   };
@@ -289,6 +298,19 @@ const PROBE_HOOK_SRC = `(() => {
     po.observe({ type: 'long-animation-frame', buffered: true, durationThreshold: 50 });
   } catch (e) {
     data.err = 'loaf: ' + String(e);
+  }
+
+  // --- LongTask 观察（隐藏 tab 也触发，补 LoAF 的结构性盲区；封顶 1000 条） ---
+  try {
+    const po2 = new PerformanceObserver(function (list) {
+      for (const e of list.getEntries()) {
+        if (data.longtasks.length >= 1000) return;
+        data.longtasks.push({ t: Math.round(e.startTime), dur: Math.round(e.duration) });
+      }
+    });
+    po2.observe({ type: 'longtask', buffered: true });
+  } catch (e) {
+    data.err = (data.err ? data.err + '; ' : '') + 'longtask: ' + String(e);
   }
   return 'ok';
 })()`;
@@ -462,6 +484,9 @@ interface RoundMetrics {
   loafBlockingMs: number;
   sourcelessCount: number;
   sourcelessBlockingMs: number;
+  longtaskCount: number;
+  longtaskTotalMs: number;
+  longtaskMaxMs: number;
   reflowTotal: number;
   styleEventTotal: number;
   failures: string[];
@@ -557,13 +582,21 @@ async function runRound(
     const kinds: string[] = ['list'];
     const urls: string[] = [args.listPage];
     if (args.pages === 'detail') {
-      const detailUrls = await collectDetailUrls(gate, args.tabs - 1);
-      if (detailUrls.length < args.tabs - 1) {
-        failures.push(`详情链接不足（${detailUrls.length}/${args.tabs - 1}），尾部补列表页`);
+      // --active-list：复现 census r2 组合（tabs-2 个详情 + 末尾列表页作活动 tab）
+      const detailCount = args.activeList ? args.tabs - 2 : args.tabs - 1;
+      let detailUrls = args.detailUrls
+        ? args.detailUrls.slice(0, detailCount)
+        : await collectDetailUrls(gate, detailCount);
+      if (detailUrls.length < detailCount) {
+        failures.push(`详情链接不足（${detailUrls.length}/${detailCount}），尾部补列表页`);
       }
-      for (let i = 0; i < args.tabs - 1; i += 1) {
+      for (let i = 0; i < detailCount; i += 1) {
         urls.push(detailUrls[i] ?? args.listPage);
         kinds.push(detailUrls[i] ? 'detail' : 'list');
+      }
+      if (args.activeList) {
+        urls.push(args.listPage);
+        kinds.push('list');
       }
     } else {
       for (let i = 0; i < args.tabs - 1; i += 1) {
@@ -669,6 +702,7 @@ async function runRound(
 
     // --- 汇总指标 ---
     let loafCount = 0, loafBlockingMs = 0, sourcelessCount = 0, sourcelessBlockingMs = 0;
+    let longtaskCount = 0, longtaskTotalMs = 0, longtaskMaxMs = 0;
     let reflowTotal = 0, styleEventTotal = 0;
     for (const p of perPage) {
       const d = p.data;
@@ -683,6 +717,11 @@ async function runRound(
           sourcelessBlockingMs += f.blocking;
         }
       }
+      for (const f of d.longtasks) {
+        longtaskCount += 1;
+        longtaskTotalMs += f.dur;
+        if (f.dur > longtaskMaxMs) longtaskMaxMs = f.dur;
+      }
     }
     // CPU 积分：相邻样本 cpuTime 差之和（getProcessInfo 的 cpuTime 是进程累计 CPU 秒）
     let cpuCoreSec = 0;
@@ -692,7 +731,7 @@ async function runRound(
       rssPeak = Math.max(rssPeak, cpuSamples[i].rssBytes);
     }
     const jsCpuCoreSec = 0; // SystemInfo 无 JS 分项，留字段占位（口径说明见报告）
-    log(`${label} 汇总: loaf=${loafCount}(sourceless=${sourcelessCount}) reflow=${reflowTotal} cpu=${cpuCoreSec.toFixed(1)}core·s rssPeak=${(rssPeak / 1024 / 1024).toFixed(0)}MB`);
+    log(`${label} 汇总: loaf=${loafCount}(sourceless=${sourcelessCount}) longtask=${longtaskCount}(max=${longtaskMaxMs}ms,total=${(longtaskTotalMs/1000).toFixed(1)}s) reflow=${reflowTotal} cpu=${cpuCoreSec.toFixed(1)}core·s rssPeak=${(rssPeak / 1024 / 1024).toFixed(0)}MB`);
 
     return {
       label,
@@ -705,6 +744,9 @@ async function runRound(
       loafBlockingMs,
       sourcelessCount,
       sourcelessBlockingMs,
+      longtaskCount,
+      longtaskTotalMs,
+      longtaskMaxMs,
       reflowTotal,
       styleEventTotal,
       failures,
@@ -905,6 +947,12 @@ function parseArgs(argv: string[]): Args {
       }
       case '--list-page':
         args.listPage = next();
+        break;
+      case '--detail-urls':
+        args.detailUrls = next().split(',').map((x) => x.trim()).filter(Boolean);
+        break;
+      case '--active-list':
+        args.activeList = true;
         break;
       case '--proxy':
         args.proxy = next();
