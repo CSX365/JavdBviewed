@@ -53,7 +53,11 @@ export class RequestScheduler {
   constructor(options: RequestSchedulerOptions = {}) {
     this.config = { ...this.config, ...options.config };
     this.fetchImpl = options.fetchImpl ?? (((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as typeof fetch);
-    this.setTimeoutImpl = options.setTimeoutImpl ?? setTimeout;
+    // SW realm 中把全局 setTimeout 以普通对象成员方式调用（this.setTimeoutImpl(...)）
+    // 会触发 receiver 检查抛 TypeError: Illegal invocation，必须经 globalThis 调用（与 fetchImpl 同款处理）。
+    this.setTimeoutImpl =
+      options.setTimeoutImpl ??
+      (((...args: Parameters<typeof setTimeout>) => globalThis.setTimeout(...args)) as typeof setTimeout);
     this.now = options.now ?? Date.now;
   }
 

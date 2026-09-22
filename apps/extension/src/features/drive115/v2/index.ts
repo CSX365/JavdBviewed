@@ -6,7 +6,11 @@
 import { getSettings, saveSettings, getValue } from '../../../utils/storage';
 import { STORAGE_KEYS } from '../../../utils/config';
 import { saveSettingsSectionDelta } from '../../../utils/settingsDelta';
-import { describe115Error } from './errorCodes';
+import {
+  describe115Error,
+  is115RefreshRateLimitCode,
+  is115RefreshTokenPermanentlyInvalidCode,
+} from './errorCodes';
 import { addLogV2 } from './logs';
 import {
   extractStreamUrlFromPlayResponse as extractDrive115StreamUrlFromPlayResponse,
@@ -659,7 +663,6 @@ class Drive115V2Service {
       const newSettings: any = { ...(settings || {}) };
       newSettings.drive115 = { ...(settings?.drive115 || {}) };
 
-      const { is115RefreshTokenPermanentlyInvalidCode, is115RefreshRateLimitCode } = await import('./errorCodes');
 
       if (is115RefreshTokenPermanentlyInvalidCode(code)) {
         // refresh_token 永久失效

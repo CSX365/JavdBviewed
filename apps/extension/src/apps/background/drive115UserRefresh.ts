@@ -4,6 +4,7 @@
  * @module apps/background
  */
 import { hasDrive115V2Credentials, isDrive115EnabledState, normalizeDrive115Settings } from '../../features/drive115/app';
+import { getDrive115V2Service } from '../../features/drive115/v2';
 import { getSettings, saveSettings, getValue } from '../../utils/storage';
 import { STORAGE_KEYS } from '../../utils/config';
 import { saveSettingsSectionDelta } from '../../utils/settingsDelta';
@@ -40,7 +41,6 @@ export async function backgroundRefreshDrive115UserInfo(): Promise<void> {
 
     console.info('[Background] 115 后台自动刷新用户信息开始');
 
-    const { getDrive115V2Service } = await import('../../features/drive115/v2');
     const svc = getDrive115V2Service();
     const result = await svc.fetchUserInfoAuto({ forceAutoRefresh: true });
     if (!result.success || !result.data) {

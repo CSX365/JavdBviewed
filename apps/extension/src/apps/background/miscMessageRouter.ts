@@ -29,6 +29,7 @@ import {
   handleDrive115Verify,
   handleOpenTabBackground,
 } from './tabMessageHandlers';
+import { enqueueWatchedForCleanup } from '../../features/drive115/v2/drive115CleanupActions';
 import {
   handleEmbyLibraryCheckCodes,
   handleEmbyLibraryGetItemDetail,
@@ -240,7 +241,6 @@ export function registerMiscRouter(): void {
         case 'MEDIA_115_CLEANUP_ENQUEUE': {
           void (async () => {
             try {
-              const { enqueueWatchedForCleanup } = await import('../../features/drive115/v2/drive115CleanupActions');
               const ret = await enqueueWatchedForCleanup({
                 code: String(message?.code || ''),
                 title: String(message?.title || message?.code || ''),

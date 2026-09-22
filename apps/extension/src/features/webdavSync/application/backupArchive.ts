@@ -1,19 +1,17 @@
 /**
  * 统一本地与 WebDAV 备份包格式：ZIP 内包含 backup.json。
  */
-// L-5：jszip(~95KB) 只在创建/解析备份包时用，从 dashboard 入口静态闭包挪到用时动态 import。
 // jszip 是 CJS 模块（export =），模块导出类型直接就是构造函数。
-type JSZipCtor = typeof import('jszip');
-let jszipModulePromise: Promise<JSZipCtor> | null = null;
+// 注意：曾用「用时动态 import」把 jszip(~95KB) 挪出 dashboard 入口静态闭包（L-5），
+// 但 SW（Manifest V3）被引擎级禁止运行时 import()，而 WebDAV 自动上传走 SW 路径
+// （scheduler → controller → uploadService → createBackupArchive），动态 import 在
+// SW 内必死（import() is disallowed）。改回静态导入，代价是入口加载图多一个 jszip chunk。
+import JSZip from 'jszip';
+
+type JSZipCtor = typeof JSZip;
+
 function loadJSZip(): Promise<JSZipCtor> {
-  if (!jszipModulePromise) {
-    jszipModulePromise = import('jszip').then((m) => {
-      // 打包后命名空间可能是 { default: JSZip } 或类本身，两种形态都兼容。
-      const ns = m as unknown as { default?: JSZipCtor };
-      return (ns.default ?? m) as JSZipCtor;
-    });
-  }
-  return jszipModulePromise;
+  return Promise.resolve(JSZip);
 }
 
 export const BACKUP_JSON_FILENAME = 'backup.json';

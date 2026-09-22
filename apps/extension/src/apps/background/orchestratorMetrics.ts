@@ -16,6 +16,7 @@
  */
 import { globalTaskCenter } from '../../platform/tasks/globalTaskCenter';
 import { getValue, setValue } from '../../utils/storage';
+import { resolveTaskBucket } from '../../platform/tasks/taskPolicy';
 
 const TASK_DETAILS_HOT_KEY = 'orchestratorTaskDetails';
 const TASK_DETAILS_ARCHIVE_KEY = 'orchestratorTaskDetailsArchive';
@@ -384,7 +385,6 @@ export function handleSaveTaskDetail(taskDetail: any, sender?: chrome.runtime.Me
 
       // 可观测性：补齐 bucket / queueAgeMs（旧记录或 content 未写时）
       try {
-        const { resolveTaskBucket } = await import('../../platform/tasks/taskPolicy');
         if (!normalizedDetail.bucket && normalizedDetail.label) {
           normalizedDetail.bucket = resolveTaskBucket(String(normalizedDetail.label));
         }
