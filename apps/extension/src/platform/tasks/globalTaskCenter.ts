@@ -125,7 +125,7 @@ export class GlobalTaskCenter {
       const item = await new Promise<any>((resolve, reject) => {
         chrome.storage.local.get([this.storageKey, this.dedupeStorageKey], (result) => {
           if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-          resolve(result);
+          resolve(result || {});
         });
       });
       const data = item[this.storageKey];

@@ -292,7 +292,8 @@ export class PrivacyStorage {
                         if (chrome.runtime.lastError) {
                             reject(chrome.runtime.lastError);
                         } else {
-                            resolve(result[key]);
+                            // 回调可能以 undefined 调用（storage 异常/SW 生命周期边缘），兜底避免回调内 throw 导致 Promise 挂死
+                            resolve(result?.[key]);
                         }
                     });
                 } else {

@@ -355,6 +355,10 @@ export class NetworkTestSettings extends BaseSettingsPanel {
     private async getStoredSettings(): Promise<ExtensionSettings> {
         return new Promise((resolve) => {
             chrome.storage.local.get('settings', (result) => {
+                if (chrome.runtime.lastError || !result) {
+                    resolve({} as ExtensionSettings);
+                    return;
+                }
                 resolve((result.settings || {}) as ExtensionSettings);
             });
         });

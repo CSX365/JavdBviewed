@@ -1266,7 +1266,7 @@ export class ApiClient {
     private async isIDBMigrated(): Promise<boolean> {
         try {
             return await new Promise<boolean>((resolve) => {
-                chrome.storage.local.get([STORAGE_KEYS.IDB_MIGRATED], (r) => resolve(!!r[STORAGE_KEYS.IDB_MIGRATED]));
+                chrome.storage.local.get([STORAGE_KEYS.IDB_MIGRATED], (r) => resolve(!!(r && r[STORAGE_KEYS.IDB_MIGRATED])));
             });
         } catch {
             return false;

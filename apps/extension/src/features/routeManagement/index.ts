@@ -559,6 +559,12 @@ export class RouteManager {
     private async getUpdateStatus(): Promise<RoutesUpdateStatus> {
         return new Promise((resolve) => {
             chrome.storage.local.get('routes_update_status', (result) => {
+                // storage 回调可能以 undefined 调用（storage 异常/SW 生命周期边缘），必须兜底，
+                // 否则回调内 throw 是异步 uncaught，外层接不住，Promise 永久挂死
+                if (chrome.runtime.lastError || !result) {
+                    resolve({ lastCheckTime: 0, lastUpdateTime: 0, currentVersion: '1.0.0' });
+                    return;
+                }
                 resolve((result.routes_update_status as RoutesUpdateStatus | undefined) || {
                     lastCheckTime: 0,
                     lastUpdateTime: 0,
@@ -596,6 +602,10 @@ export class RouteManager {
     private async getSettings(): Promise<ExtensionSettings> {
         return new Promise((resolve) => {
             chrome.storage.local.get('settings', (result) => {
+                if (chrome.runtime.lastError || !result) {
+                    resolve({ routes: DEFAULT_ROUTES } as ExtensionSettings);
+                    return;
+                }
                 resolve(result.settings || { routes: DEFAULT_ROUTES } as ExtensionSettings);
             });
         });
