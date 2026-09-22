@@ -22,6 +22,7 @@ export class ListsTab {
     private activeSubTab: SubTab = 'lists';
     private active = false;
     private renderGeneration = 0;
+    private lastRenderSignature: string | null = null;
     private lifecycleUnregister: (() => void) | null = null;
 
     async initialize(): Promise<void> {
@@ -48,13 +49,8 @@ export class ListsTab {
             onHidden: () => {
                 this.active = false;
                 this.renderGeneration += 1;
-                clearTabWorkset(document.getElementById('tab-lists'), [
-                    '#listsLocalContainer',
-                    '#listsMineContainer',
-                    '#listsFavContainer',
-                    '#listsSeriesContainer',
-                    '#listsLabelsContainer',
-                ]);
+                // 保留 DOM 不清空：二次激活时无需整片重绘，避免每次切回都触发一轮逐帧提交等待。
+                // 数据新鲜度由 onRestore -> loadAndRender 的签名比对保证。
             },
             onDispose: () => {
                 this.active = false;
@@ -254,13 +250,58 @@ export class ListsTab {
 
     private async loadAndRender(): Promise<void> {
         const generation = ++this.renderGeneration;
+        let loaded: ListRecord[];
         try {
-            this.lists = await dbListsGetAllNormalized();
+            loaded = await dbListsGetAllNormalized();
         } catch (e) {
-            this.lists = [];
+            loaded = [];
         }
         if (!this.active || generation !== this.renderGeneration) return;
+        this.lists = loaded;
+        const signature = this.buildRenderSignature(loaded);
+        if (signature === this.lastRenderSignature) {
+            // 数据未变化：保留现有 DOM，跳过整片重绘（清单页二次激活卡顿的来源）。
+            return;
+        }
+        this.lastRenderSignature = signature;
         this.render();
+    }
+
+    /**
+     * 渲染签名：清单数据（按 id 排序后取渲染相关字段）+ 视频记录指纹。
+     * 记录指纹覆盖 series/label 面板「已入库 N 部」计数依赖的 STATE.records 变化。
+     */
+    private buildRenderSignature(loaded: ListRecord[]): string {
+        const byId = [...loaded].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const listSig = byId.map(l => [
+            l.source ?? '',
+            l.type ?? '',
+            l.id ?? '',
+            l.name ?? '',
+            l.externalId ?? '',
+            l.url ?? '',
+            l.moviesCount ?? '',
+            l.updatedAt ?? '',
+        ].join('\u0001')).join('\u0002');
+        return `${listSig}\u0003${this.recordsFingerprint()}`;
+    }
+
+    /** 双 32 位 FNV 风格哈希，O(n) 扫描记录 id+updatedAt，2w 条约 2-4ms */
+    private recordsFingerprint(): string {
+        const records = Array.isArray(STATE.records) ? STATE.records : [];
+        let h1 = (0x811c9dc5 ^ records.length) >>> 0;
+        let h2 = (0x1000193 ^ records.length) >>> 0;
+        for (let i = 0; i < records.length; i++) {
+            const r = records[i];
+            if (!r) continue;
+            const s = `${r.id ?? ''}:${r.updatedAt ?? 0}`;
+            for (let j = 0; j < s.length; j++) {
+                const c = s.charCodeAt(j);
+                h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+                h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0;
+            }
+        }
+        return `${h1.toString(16)}:${h2.toString(16)}`;
     }
 
     private render(): void {

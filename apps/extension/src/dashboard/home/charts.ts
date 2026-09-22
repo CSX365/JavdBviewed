@@ -231,7 +231,7 @@ export function buildHomeTagsBarOptions(data: HomeTagsBarDatum[], theme: HomeTag
     xField: 'value',
     yField: 'name',
     legend: false,
-    autoFit: true,
+    autoFit: false,
     barStyle: { radius: [0, 6, 6, 0] },
     label: {
       position: 'right',
@@ -296,6 +296,7 @@ function updateG2Plot(
   if (current?.changeData && charts[`${key}Element`] === el) {
     try {
       current.changeData(data);
+      rememberHomeChartSize(charts, key, el);
       return current;
     } catch {}
   }
@@ -305,6 +306,7 @@ function updateG2Plot(
   plot.render();
   charts[key] = plot;
   charts[`${key}Element`] = el;
+  rememberHomeChartSize(charts, key, el);
   return plot;
 }
 
@@ -350,7 +352,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
       }
       const yAxis = sum <= 0 ? { min: 0, max: 1 } : { min: 0, nice: true };
       updateG2Plot(charts, 'recordsTrend', linePlot, recordsTrendEl, {
-        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: true,
+        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: false,
         legend: { position: 'top' }, tooltip: { shared: true }, yAxis,
         color: (datum: any) => ({
           '总记录': colors.primary,
@@ -386,7 +388,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
       }
       const yAxis = sum <= 0 ? { min: 0, max: 1 } : { min: 0, nice: true };
       updateG2Plot(charts, 'actorsTrend', linePlot, actorsTrendEl, {
-        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: true,
+        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: false,
         legend: { position: 'top' }, tooltip: { shared: true }, yAxis,
         color: (datum: any) => ({
           '总演员数': colors.primary,
@@ -419,7 +421,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
       }
       const yAxis = sum <= 0 ? { min: 0, max: 1 } : { min: 0, nice: true };
       updateG2Plot(charts, 'newWorksTrend', linePlot, newWorksTrendEl, {
-        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: true,
+        xField: 'date', yField: 'value', seriesField: 'type', smooth: true, autoFit: false,
         legend: { position: 'top' }, tooltip: { shared: true }, yAxis,
         color: (datum: any) => ({
           '当天总量': colors.primary,
@@ -469,7 +471,99 @@ export function disposeHomeCharts(options: { preserveOverviewRender?: boolean } 
     const resizeCleanup = charts._resizeCleanup;
     if (typeof resizeCleanup === 'function') resizeCleanup();
   } catch {}
+  try {
+    homeChartSizeCache = {};
+    if (homeChartSizeSyncTimer !== null) { window.clearTimeout(homeChartSizeSyncTimer); homeChartSizeSyncTimer = null; }
+  } catch {}
   disposeChartRegistry(charts);
+}
+
+// cycle-12 G2Plot 另案：图表 autoFit 全部关闭后，G2 不再给每个图表容器挂 ResizeObserver，
+// 消除 tab 隐藏→重显时 8 图同步重绘的 home 再激活长任务。尺寸变化（窗口 resize / tab 重显）
+// 统一走 debounce 后的 syncHomeChartSizes：容器尺寸未变不重绘（尺寸缓存），
+// G2Plot 用 changeSize(w,h)，echarts 用 resize()。
+const HOME_CHART_SIZE_SYNC_KEYS = [
+  'statusDonut','newWorksBars','activityTrend','tagsTop','tagsChange','newTagsTop','recordsTrend','actorsTrend','newWorksTrend',
+];
+const HOME_CHART_SIZE_SYNC_DEBOUNCE_MS = 150;
+let homeChartSizeCache: Record<string, { w: number; h: number }> = {};
+let homeChartSizeSyncTimer: number | null = null;
+let homeChartsSizeSyncBound = false;
+
+function getHomeChartElement(HC: Record<string, any>, key: string): HTMLElement | null {
+  try {
+    const c = HC[key];
+    if (!c) return null;
+    let el: any = null;
+    if (typeof c.getContainer === 'function') { try { el = c.getContainer(); } catch {} }
+    if (!el && typeof c.getDom === 'function') { try { el = c.getDom(); } catch {} }
+    if (!el) el = c.container;
+    if (!el) el = HC[`${key}Element`];
+    return el instanceof HTMLElement ? el : null;
+  } catch { return null; }
+}
+
+function syncHomeChartSizes(HC: Record<string, any>): void {
+  try {
+    for (const key of HOME_CHART_SIZE_SYNC_KEYS) {
+      const c = HC[key];
+      if (!c) continue;
+      const el = getHomeChartElement(HC, key);
+      if (!el) continue;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (!w || !h) continue; // 容器 0x0（tab 隐藏中），等下次 tab:show 再补
+      const cached = homeChartSizeCache[key];
+      if (cached && cached.w === w && cached.h === h) continue;
+      let resized = false;
+      if (typeof c.changeSize === 'function') {
+        try { c.changeSize(w, h); resized = true; } catch {}
+      } else if (typeof c.resize === 'function') {
+        try { c.resize(); resized = true; } catch {}
+      }
+      if (resized) homeChartSizeCache[key] = { w, h };
+    }
+  } catch {}
+}
+
+function rememberHomeChartSize(HC: Record<string, any>, key: string, el: HTMLElement | null): void {
+  try {
+    if (!el) return;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (w && h) homeChartSizeCache[key] = { w, h };
+  } catch {}
+}
+
+function scheduleHomeChartSizeSync(delayMs: number = HOME_CHART_SIZE_SYNC_DEBOUNCE_MS): void {
+  try {
+    if (homeChartSizeSyncTimer !== null) window.clearTimeout(homeChartSizeSyncTimer);
+    homeChartSizeSyncTimer = window.setTimeout(() => {
+      homeChartSizeSyncTimer = null;
+      // cycle-12 保活防护：home 非前台时不做尺寸同步（保活方案下隐藏容器仍可能有实际布局尺寸，
+      // 避免窗口 resize 时对不可见图表做无效 changeSize）；tab:show 后的 60ms 补偿会补上。
+      if (!isHomeTabActive()) return;
+      const HC = (window as any).__HOME_CHARTS__;
+      if (HC) syncHomeChartSizes(HC);
+    }, Math.max(0, delayMs));
+  } catch {}
+}
+
+function bindHomeChartsSizeSync(): void {
+  if (homeChartsSizeSyncBound) return;
+  homeChartsSizeSyncBound = true;
+  try {
+    const onResize = () => scheduleHomeChartSizeSync();
+    window.addEventListener('resize', onResize);
+    const W: any = window as any;
+    const HC: any = (W.__HOME_CHARTS__ = W.__HOME_CHARTS__ || {});
+    try { if (typeof HC._resizeCleanup === 'function') HC._resizeCleanup(); } catch {}
+    HC._resizeCleanup = () => {
+      window.removeEventListener('resize', onResize);
+      homeChartsSizeSyncBound = false;
+      if (homeChartSizeSyncTimer !== null) { window.clearTimeout(homeChartSizeSyncTimer); homeChartSizeSyncTimer = null; }
+    };
+  } catch {}
 }
 
 function bindHomeChartsPageLifecycle(): void {
@@ -482,6 +576,12 @@ function bindHomeChartsPageLifecycle(): void {
       if (detail?.tabId !== 'tab-home') return;
       // 隐藏时使未完成的异步渲染失效，但保留已绘制的图表表面供恢复时复用。
       homeChartLifecycle.cancel();
+    });
+    window.addEventListener('tab:show', (event: Event) => {
+      const detail = (event as CustomEvent<{ tabId?: string }>).detail;
+      if (detail?.tabId !== 'tab-home') return;
+      // 隐藏→重显后容器尺寸可能已变（窗口 resize），补一次去抖尺寸同步；尺寸未变则不会重绘。
+      scheduleHomeChartSizeSync(60);
     });
   } catch {}
 }
@@ -568,21 +668,11 @@ async function renderHomeChartsWithEcharts(
       if (cur && cur.dispose) { try { cur.dispose(); } catch {} }
       const inst = ech.init(el, undefined, getHomeEchartsInitOptions());
       HC[key] = inst;
+      rememberHomeChartSize(HC, key, el);
       return inst;
     };
-    if (!HC._resizeBound) {
-      try {
-        const onResize = () => {
-          ['statusDonut','newWorksBars','activityTrend','tagsTop','tagsChange','newTagsTop','recordsTrend','actorsTrend','newWorksTrend'].forEach((k: string) => {
-            const c = HC[k];
-            if (c && c.resize) { try { c.resize(); } catch {} }
-          });
-        };
-        window.addEventListener('resize', onResize);
-        HC._resizeCleanup = () => window.removeEventListener('resize', onResize);
-        HC._resizeBound = true;
-      } catch {}
-    }
+    // 图表尺寸同步统一走 bindHomeChartsSizeSync（window resize 去抖 + tab:show 补偿，
+    // 兼容 G2Plot changeSize 与 echarts resize），此处不再单独绑定。
     const getVar = (name: string, fallback: string) => {
       try {
         const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -882,6 +972,7 @@ async function renderHomeCharts(): Promise<void> {
       return;
     }
     bindHomeChartsPageLifecycle();
+    bindHomeChartsSizeSync();
     installCanvasDirectionGuard();
     bindHomeChartsThemeListener();
     try { await ensureBackgroundReady(); } catch {}
@@ -1027,6 +1118,7 @@ async function renderHomeCharts(): Promise<void> {
         updateG2Plot(HC, 'statusDonut', Pie, statusEl, {
           angleField: 'value',
           colorField: 'name',
+          autoFit: false,
           radius: 0.72,
           innerRadius: 0.46,
           legend: { position: 'bottom', itemName: { style: { fill: COLORS.muted, fontSize: 12 } } },
@@ -1057,7 +1149,7 @@ async function renderHomeCharts(): Promise<void> {
           columnStyle: { radius: [6,6,0,0] },
           color: COLORS.primary,
           label: { position: 'top' },
-    autoFit: true,
+    autoFit: false,
     animation: false,
         }, data);
       }
@@ -1105,6 +1197,8 @@ async function renderHomeCharts(): Promise<void> {
                  const plot = new Bar(tagsEl, withHomeChartRenderPolicy(buildHomeTagsBarOptions(list, tagTheme)));
                 plot.render();
                 HC['tagsTop'] = plot;
+                HC['tagsTopElement'] = tagsEl;
+                rememberHomeChartSize(HC, 'tagsTop', tagsEl);
               }
             } catch {
               try { if (HC['tagsTop']?.destroy) { HC['tagsTop'].destroy(); } } catch {}
@@ -1118,6 +1212,8 @@ async function renderHomeCharts(): Promise<void> {
                const plot = new Bar(tagsEl, withHomeChartRenderPolicy(buildHomeTagsBarOptions(list, tagTheme)));
               plot.render();
               HC['tagsTop'] = plot;
+              HC['tagsTopElement'] = tagsEl;
+              rememberHomeChartSize(HC, 'tagsTop', tagsEl);
             }
             this.updatePager();
           },
@@ -1167,7 +1263,7 @@ async function renderHomeCharts(): Promise<void> {
           if (!isHomeChartSessionActive(session)) return;
           hideLoading(changeEl);
           updateG2Plot(HC, 'tagsChange', Bar, changeEl, {
-          xField: 'value', yField: 'name', legend: false, autoFit: true,
+          xField: 'value', yField: 'name', legend: false, autoFit: false,
           barStyle: { radius: [0, 6, 6, 0] }, label: { position: 'right', formatter: (d: any) => `${d.value > 0 ? '+' : ''}${(d.value as number).toFixed ? (d.value as number).toFixed(2) : d.value}%` }, tooltip: { showTitle: false },
           xAxis: { nice: true }, yAxis: { label: { autoHide: true, autoEllipsis: true } },
           color: (d: any) => d.value >= 0 ? '#16a34a' : '#ef4444',
@@ -1186,7 +1282,7 @@ async function renderHomeCharts(): Promise<void> {
           if (!isHomeChartSessionActive(session)) return;
           hideLoading(newTagsEl);
           updateG2Plot(HC, 'newTagsTop', Bar, newTagsEl, {
-          xField: 'value', yField: 'name', legend: false, autoFit: true,
+          xField: 'value', yField: 'name', legend: false, autoFit: false,
           barStyle: { radius: [0, 6, 6, 0] }, label: { position: 'right' }, tooltip: { showTitle: false },
           xAxis: { min: 0, nice: true }, yAxis: { label: { autoHide: true, autoEllipsis: true } },
           color: (d: any) => d.color,

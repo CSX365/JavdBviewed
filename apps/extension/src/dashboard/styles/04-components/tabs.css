@@ -39,6 +39,17 @@
     min-height: calc(100vh - 140px) !important;
 }
 
+/* ===== cycle-12 G2Plot 另案：home tab 渲染保活 =====
+   非激活时用 content-visibility:hidden 跳过内容渲染（而不是 display:none 摧毁渲染树），
+   让 SVG 图表子树（G2Plot 本地 bundle 实际输出 svg，非 canvas）的布局/绘制状态保活，
+   重显时免去整棵图表子树重绘（修复前 ~400ms 长任务）。
+   contain-intrinsic-size: 0px 保证跳过期间不占布局空间（高度塌缩为 0，不产生空白）。 */
+#tab-home:not(.active) {
+    display: block;
+    content-visibility: hidden;
+    contain-intrinsic-size: 0px;
+}
+
 .tabs-content {
     padding-top: 20px;
 }
