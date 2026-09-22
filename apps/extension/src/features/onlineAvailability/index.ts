@@ -17,6 +17,8 @@ export interface OnlineAvailabilitySite {
   url: string;
   fetchType: OnlineAvailabilityFetchType;
   enabled: boolean;
+  /** get 型直连详情页的轻量探测：只下载正文前 N 字节（head + 主体开头），命中信号后放弃剩余下载 */
+  probePrefixBytes?: number;
   codeFormatter?: (code: string) => string;
   domQuery?: {
     linkQuery?: string;
@@ -52,6 +54,13 @@ export interface OnlineAvailabilityInsertionTarget {
 
 const SP_PREFIX = '300';
 
+/**
+ * get 型站点直连详情页的探测窗口（字节）。
+ * 命中信号（canonical/og:url/title 在 head，详情主块在 body 开头）都落在该窗口内，
+ * 相对整页（通常 100KB~500KB）可省 90% 以上下载与解析成本；parser 型站点不做截断。
+ */
+const GET_PROBE_PREFIX_BYTES = 32768;
+
 export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
   {
     key: 'fanza',
@@ -59,6 +68,7 @@ export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
     url: 'https://www.dmm.co.jp/digital/videoa/-/detail/=/cid={{code}}/',
     fetchType: 'get',
     enabled: true,
+    probePrefixBytes: GET_PROBE_PREFIX_BYTES,
     codeFormatter: formatFanzaCode,
   },
   {
@@ -67,6 +77,7 @@ export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
     url: 'https://jable.tv/videos/{{code}}/',
     fetchType: 'get',
     enabled: true,
+    probePrefixBytes: GET_PROBE_PREFIX_BYTES,
     domQuery: {
       subQuery: '.info-header',
       leakQuery: '.info-header',
@@ -78,6 +89,7 @@ export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
     url: 'https://missav.ws/{{code}}/',
     fetchType: 'get',
     enabled: true,
+    probePrefixBytes: GET_PROBE_PREFIX_BYTES,
     domQuery: {
       subQuery: '.space-y-2 a.text-nord13[href*="chinese-subtitle"], a[href*="chinese-subtitle"]',
       leakQuery: '.order-first div.rounded-md a[href]:last-child',
@@ -155,6 +167,7 @@ export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
     url: 'https://javbus.com/{{code}}',
     fetchType: 'get',
     enabled: true,
+    probePrefixBytes: GET_PROBE_PREFIX_BYTES,
     codeFormatter: code => code.startsWith('MIUM') ? `${SP_PREFIX}${code}` : code,
   },
 ];
@@ -258,6 +271,10 @@ export class OnlineAvailabilityManager {
             headers: {
               Referer: 'https://javdb.com/',
             },
+            // get 型站点只探测正文前缀，parser 型保持整页抓取
+            ...(typeof site.probePrefixBytes === 'number' && site.probePrefixBytes > 0
+              ? { maxBodyBytes: site.probePrefixBytes }
+              : {}),
           }), this.config.timeoutMs, `${site.name} availability check`);
           return parseOnlineAvailabilityDocument(site, doc, videoId, url, 200);
         },

@@ -6,6 +6,7 @@
 
 import { FetchOptions, NetworkError } from './types';
 import { DOCUMENT_ONLY_ACCEPT } from './documentRequestHeaders';
+import { readBodyPrefix } from './bodyPrefix';
 
 export { NetworkError } from './types';
 export type { FetchOptions } from './types';
@@ -121,6 +122,7 @@ export class HttpClient {
       retries = this.defaultRetries,
       responseType = 'json',
       referrer,
+      maxBodyBytes,
     } = config;
 
     const requestHeaders = {
@@ -144,6 +146,7 @@ export class HttpClient {
             timeout,
             responseType,
             referrer,
+            ...(typeof maxBodyBytes === 'number' && maxBodyBytes > 0 ? { maxBodyBytes } : {}),
           });
         }
 
@@ -168,7 +171,7 @@ export class HttpClient {
           );
         }
 
-        return await this.parseResponse<T>(response, responseType);
+        return await this.parseResponse<T>(response, responseType, maxBodyBytes);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error('Unknown error');
 
@@ -183,16 +186,17 @@ export class HttpClient {
     throw lastError;
   }
 
-  private async parseResponse<T>(response: Response, responseType: string): Promise<T> {
+  private async parseResponse<T>(response: Response, responseType: string, maxBodyBytes = 0): Promise<T> {
+    const hasPrefix = typeof maxBodyBytes === 'number' && maxBodyBytes > 0;
     switch (responseType) {
       case 'json':
         return await response.json();
       case 'text':
-        return (await response.text()) as unknown as T;
+        return (hasPrefix ? await readBodyPrefix(response, maxBodyBytes) : await response.text()) as unknown as T;
       case 'blob':
         return (await response.blob()) as unknown as T;
       case 'document': {
-        const html = await response.text();
+        const html = hasPrefix ? await readBodyPrefix(response, maxBodyBytes) : await response.text();
         const parser = new DOMParser();
         return parser.parseFromString(html, 'text/html') as unknown as T;
       }

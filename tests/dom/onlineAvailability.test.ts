@@ -598,4 +598,120 @@ describe('online availability helpers', () => {
     expect(defaultHttpClient.getDocument).toHaveBeenCalledWith('https://jable.tv/videos/ssis-795-c/', expect.any(Object));
     expect(document.querySelector('#jdb-online-availability-panel a')?.getAttribute('href')).toBe('https://jable.tv/videos/ssis-795-c/');
   });
+
+  it('enables lightweight prefix probing only for the direct get sites', () => {
+    const directGetKeys = new Set(['fanza', 'jable', 'missav', 'javbus']);
+
+    for (const site of DEFAULT_ONLINE_AVAILABILITY_SITES) {
+      if (site.fetchType === 'get') {
+        expect(directGetKeys.has(site.key)).toBe(true);
+        expect(site.probePrefixBytes).toBeGreaterThan(0);
+      } else {
+        expect(site.probePrefixBytes).toBeUndefined();
+      }
+    }
+  });
+
+  it('passes the probe window to getDocument only for get sites', async () => {
+    const getDocument = vi.spyOn(defaultHttpClient, 'getDocument').mockImplementation(async () =>
+      new DOMParser().parseFromString('<html></html>', 'text/html'));
+    document.body.innerHTML = `
+      <h2 class="title is-4"><strong>PROBE-1</strong></h2>
+      <nav class="panel movie-panel-info">
+        <div class="review-buttons"></div>
+      </nav>
+    `;
+
+    const manager = new OnlineAvailabilityManager();
+    manager.updateConfig({
+      enabled: true,
+      autoCheck: true,
+      timeoutMs: 50,
+      sites: [
+        {
+          key: 'probesite',
+          name: 'Probe',
+          url: 'https://probe.test/{{code}}',
+          fetchType: 'get',
+          enabled: true,
+          probePrefixBytes: 32768,
+        },
+        {
+          key: 'fullsite',
+          name: 'Full',
+          url: 'https://full.test/{{code}}',
+          fetchType: 'parser',
+          enabled: true,
+        },
+      ],
+    });
+
+    await manager.initialize();
+
+    const options = getDocument.mock.calls.map(call => call[1] as Record<string, unknown>);
+    expect(options.filter(option => option.maxBodyBytes === 32768)).toHaveLength(1);
+    expect(options.filter(option => option.maxBodyBytes === undefined)).toHaveLength(1);
+  });
+
+  it('keeps a truncated jable detail page available when the signals fit the probe window', () => {
+    const site = DEFAULT_ONLINE_AVAILABILITY_SITES.find(item => item.key === 'jable')!;
+    const pad = ' '.repeat(40000);
+    const raw = [
+      '<!doctype html><html><head>',
+      '<title>SSIS-795 - Jable</title>',
+      '<link rel="canonical" href="https://jable.tv/videos/ssis-795/">',
+      '<meta property="og:url" content="https://jable.tv/videos/ssis-795/">',
+      '</head><body>',
+      '<div class="video-info"><div class="info-header">SSIS-795</div></div>',
+      pad,
+      '</body></html>',
+    ].join('');
+
+    expect(raw.length).toBeGreaterThan(site.probePrefixBytes!);
+    const doc = new DOMParser().parseFromString(raw.slice(0, site.probePrefixBytes!), 'text/html');
+    const result = parseOnlineAvailabilityDocument(site, doc, 'SSIS-795', 'https://jable.tv/videos/ssis-795/', 200);
+
+    expect(result.available).toBe(true);
+  });
+
+  it('keeps a truncated javbus detail page available when the signals fit the probe window', () => {
+    const site = DEFAULT_ONLINE_AVAILABILITY_SITES.find(item => item.key === 'javbus')!;
+    const pad = ' '.repeat(40000);
+    const raw = [
+      '<!doctype html><html><head>',
+      '<title>SSIS-795 - JavBus</title>',
+      '<link rel="canonical" href="https://javbus.com/ssis-795">',
+      '</head><body>',
+      '<h3>SSIS-795 Sample Title</h3>',
+      '<a class="bigImage" href="/pics/cover.jpg"></a>',
+      pad,
+      '</body></html>',
+    ].join('');
+
+    expect(raw.length).toBeGreaterThan(site.probePrefixBytes!);
+    const doc = new DOMParser().parseFromString(raw.slice(0, site.probePrefixBytes!), 'text/html');
+    const result = parseOnlineAvailabilityDocument(site, doc, 'SSIS-795', 'https://javbus.com/SSIS-795', 200);
+
+    expect(result.available).toBe(true);
+  });
+
+  it('documents the probe window boundary: signals beyond the prefix are not seen', () => {
+    const site = DEFAULT_ONLINE_AVAILABILITY_SITES.find(item => item.key === 'jable')!;
+    const pad = ' '.repeat(site.probePrefixBytes! + 1000);
+    const raw = [
+      '<!doctype html><html><head>',
+      '<title>SSIS-795 - Jable</title>',
+      '<link rel="canonical" href="https://jable.tv/videos/ssis-795/">',
+      '</head><body>',
+      pad,
+      '<div class="video-info"><div class="info-header">SSIS-795</div></div>',
+      '</body></html>',
+    ].join('');
+
+    const doc = new DOMParser().parseFromString(raw.slice(0, site.probePrefixBytes!), 'text/html');
+    const result = parseOnlineAvailabilityDocument(site, doc, 'SSIS-795', 'https://jable.tv/videos/ssis-795/', 200);
+
+    expect(result.available).toBe(false);
+  });
+
 });

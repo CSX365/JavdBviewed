@@ -33,6 +33,7 @@ export {
   type SchedulerConfig,
 } from './requestScheduler';
 export { registerNetProxyRouter } from './backgroundFetchRouter';
+export { readBodyPrefix } from './bodyPrefix';
 export { bgFetchJSON, bgFetchText } from './clientFetch';
 export { lookupIpOrDomain } from './ipLookup';
 export { NetworkError } from './types';

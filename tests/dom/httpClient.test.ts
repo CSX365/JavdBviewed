@@ -42,4 +42,42 @@ describe('HttpClient background fetch handling', () => {
     expect(headers?.Accept).toBe('text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.1');
     expect(headers?.Accept).not.toContain('image/');
   });
+
+  it('limits same-origin text bodies to maxBodyBytes and drops the rest', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('a'.repeat(1000)));
+    const client = new HttpClient(window.location.origin);
+
+    const text = await client.get<string>('/partial', { responseType: 'text', retries: 0, maxBodyBytes: 256 });
+
+    expect(text).toBe('a'.repeat(256));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards maxBodyBytes to the background fetch for cross-origin urls', async () => {
+    const sent: any[] = [];
+    vi.spyOn(chrome.runtime, 'sendMessage').mockImplementation((_message: any, callback?: (response: any) => void) => {
+      sent.push(_message);
+      callback?.({ success: true, status: 200, data: 'ok' });
+    });
+    const client = new HttpClient();
+
+    await client.get<string>('https://other.test/partial', { responseType: 'text', retries: 0, maxBodyBytes: 4096 });
+
+    expect(sent[0]?.type).toBe('fetch-external-data');
+    expect(sent[0]?.options.maxBodyBytes).toBe(4096);
+  });
+
+  it('omits maxBodyBytes from background fetch options when not requested', async () => {
+    const sent: any[] = [];
+    vi.spyOn(chrome.runtime, 'sendMessage').mockImplementation((_message: any, callback?: (response: any) => void) => {
+      sent.push(_message);
+      callback?.({ success: true, status: 200, data: 'ok' });
+    });
+    const client = new HttpClient();
+
+    await client.get<string>('https://other.test/full', { responseType: 'text', retries: 0 });
+
+    expect(sent[0]?.options.maxBodyBytes).toBeUndefined();
+  });
+
 });

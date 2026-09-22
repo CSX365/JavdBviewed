@@ -46,6 +46,52 @@ describe('background network message handlers', () => {
     });
   });
 
+  it('truncates the text body to maxBodyBytes and cancels the remaining stream', async () => {
+    const sendResponse = vi.fn();
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('x'.repeat(200)));
+        controller.enqueue(encoder.encode('y'.repeat(200)));
+        controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const scheduler = { enqueue: vi.fn(async () => new Response(body)) };
+
+    await handleExternalDataFetch({
+      url: 'https://example.com/page',
+      options: { responseType: 'text', maxBodyBytes: 120 },
+    }, sendResponse, scheduler as any);
+
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: 'x'.repeat(120),
+      status: 200,
+    }));
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps full json payloads even when maxBodyBytes is set', async () => {
+    const sendResponse = vi.fn();
+    const scheduler = {
+      enqueue: vi.fn(async () => new Response(JSON.stringify({ full: true }))),
+    };
+
+    await handleExternalDataFetch({
+      url: 'https://example.com/data',
+      options: { responseType: 'json', maxBodyBytes: 5 },
+    }, sendResponse, scheduler as any);
+
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: { full: true },
+    }));
+  });
+
   it('extracts an external cover URL from BlogJav search results', async () => {
     const sendResponse = vi.fn();
     const fetchImpl = vi.fn(async () => new Response(`

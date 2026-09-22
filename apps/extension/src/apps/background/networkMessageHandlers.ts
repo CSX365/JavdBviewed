@@ -4,6 +4,7 @@
  * @module apps/background
  */
 import { fetchJavbusAjaxViaTab } from '../../platform/browser/javbusTabFetch';
+import { readBodyPrefix } from '../../platform/network/bodyPrefix';
 import { requestScheduler as defaultRequestScheduler } from '../../platform/network/requestScheduler';
 
 type SendResponse = (response: any) => void;  // chrome.runtime 消息回调类型
@@ -44,9 +45,11 @@ export async function handleExternalDataFetch(
     };
 
     const response = await requestScheduler.enqueue(url, reqInit);
+    const maxBodyBytes = typeof options.maxBodyBytes === 'number' ? Math.floor(options.maxBodyBytes) : 0;
     let data: any;
     if (responseType === 'json') data = await response.json().catch(() => null);
     else if (responseType === 'blob') data = await response.blob();
+    else if (maxBodyBytes > 0) data = await readBodyPrefix(response, maxBodyBytes);
     else data = await response.text();
     const headersObj: Record<string, string> = {};
     try { response.headers.forEach((v, k) => { headersObj[k] = v; }); } catch {}

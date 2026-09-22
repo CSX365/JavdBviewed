@@ -12,6 +12,7 @@ export interface FetchOptions {
   referrer?: string;
   proxy?: boolean;                                    // 是否通过 background 代理请求（规避 CORS）
   responseType?: 'text' | 'json' | 'blob' | 'document';
+  maxBodyBytes?: number;                            // 只读取正文前 N 字节（轻量探测），仅对 text/document 生效
 }
 
 /** 网络请求错误，携带 URL 和状态码信息 */
