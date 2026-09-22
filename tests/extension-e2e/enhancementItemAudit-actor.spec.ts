@@ -35,6 +35,7 @@ import {
   readExtensionId,
   resolveExtensionHarnessOptions,
   seedExtensionStorage,
+  siteFetchText,
 } from '../../scripts/extensionHarness';
 
 function resolveTestHarnessOptions(userDataDir: string): ReturnType<typeof resolveExtensionHarnessOptions> {
@@ -71,20 +72,9 @@ interface ActorAuditTarget {
   defaultTags: string[];
 }
 
+// siteFetchText 内部已含重试；设置 JAVDB_E2E_PROXY 时自动走代理（node fetch 不认代理环境变量）
 async function fetchText(url: string): Promise<string | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const resp = await fetch(url, {
-        headers: { 'user-agent': FETCH_UA },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!resp.ok) continue;
-      return await resp.text();
-    } catch {
-      // 瞬时抖动重试一次
-    }
-  }
-  return null;
+  return siteFetchText(url, { userAgent: FETCH_UA });
 }
 
 /** 解析演员页首屏 .item 的 .meta 日期（与 parseReleaseDateFromItem 同口径） */

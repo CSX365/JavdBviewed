@@ -3,7 +3,7 @@
  * @description settings 分节 delta 并发安全写原语（S1-3）
  */
 import { describe, expect, it, vi } from 'vitest';
-import { readRawSettingsOrUndefined, saveSettingsSectionDelta } from './settingsDelta';
+import { readRawSettingsOrUndefined, saveSettingsSectionDelta } from '../../apps/extension/src/utils/settingsDelta';
 
 function makeWriter(overrides: {
   raw?: () => Promise<any>;

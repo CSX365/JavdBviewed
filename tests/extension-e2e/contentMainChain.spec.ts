@@ -33,6 +33,7 @@ import {
   readExtensionId,
   resolveExtensionHarnessOptions,
   seedExtensionStorage,
+  siteFetchText,
 } from '../../scripts/extensionHarness';
 
 function resolveTestHarnessOptions(userDataDir: string): ReturnType<typeof resolveExtensionHarnessOptions> {
@@ -57,52 +58,45 @@ interface PickedTarget {
   actorUrl: string | null;
 }
 
-/** 从最新影片列表取第一条（含番号），再从影片页取一位真实演员（网络不可用返回 null） */
+/** 从最新影片列表取一条（含番号）+ 一位真实演员（网络不可用返回 null）。
+ * 顶部影片可能是素人作品（站点演员字段为 N/A，无 /actors/ 链接）——
+ * 此时顺延取第 2、3 条直到找到有演员的影片，保证 T3（演员页增强）可被真机执行；
+ * 三条都没有演员时退回第一条（T3 按设计 skip，站点数据依赖）。 */
 async function pickLatestVideoWithActor(): Promise<PickedTarget | null> {
   try {
-    // node 预检 fetch 偶发瞬时抖动（undici 直连），失败重试一次再放弃
-    let listResp: Response | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        listResp = await fetch(`${JAVDB_E2E_HOST}/?vst=1`, {
-          headers: { 'user-agent': FETCH_UA },
-          signal: AbortSignal.timeout(30_000),
-        });
-        break;
-      } catch {
-        if (attempt === 1) throw new Error('list fetch retry failed');
-      }
+    // 预检 fetch 偶发瞬时抖动，siteFetchText 内部已含重试；JAVDB_E2E_PROXY 设置时自动走代理
+    const listHtml = await siteFetchText(`${JAVDB_E2E_HOST}/?vst=1`, { userAgent: FETCH_UA });
+    if (!listHtml) return null;
+
+    const blocks: { id: string; code: string }[] = [];
+    let idx = listHtml.indexOf('<div class="item');
+    for (let n = 0; n < 3 && idx !== -1; n++) {
+      const next = listHtml.indexOf('<div class="item', idx + 1);
+      const block = listHtml.slice(idx, next === -1 ? undefined : next);
+      const idMatch = block.match(/href="\/v\/([A-Za-z0-9]+)"/);
+      const codeMatch = block.match(/<div class="video-title[^"]*">[\s\S]*?<strong>([^<]+)<\/strong>/);
+      if (!idMatch || !codeMatch) break;
+      blocks.push({ id: idMatch[1], code: codeMatch[1].trim() });
+      idx = next;
     }
-    if (!listResp || !listResp.ok) return null;
-    const listHtml = await listResp.text();
+    if (blocks.length === 0) return null;
 
-    const firstItemIdx = listHtml.indexOf('<div class="item');
-    if (firstItemIdx === -1) return null;
-    const secondItemIdx = listHtml.indexOf('<div class="item', firstItemIdx + 1);
-    const block = listHtml.slice(firstItemIdx, secondItemIdx === -1 ? undefined : secondItemIdx);
+    const first = blocks[0];
+    const firstUrl = `${JAVDB_E2E_HOST}/v/${first.id}`;
 
-    const idMatch = block.match(/href="\/v\/([A-Za-z0-9]+)"/);
-    const codeMatch = block.match(/<div class="video-title[^"]*">[\s\S]*?<strong>([^<]+)<\/strong>/);
-    if (!idMatch || !codeMatch) return null;
-
-    const videoId = idMatch[1];
-    const videoCode = codeMatch[1].trim();
-    const videoUrl = `${JAVDB_E2E_HOST}/v/${videoId}`;
-
-    let actorUrl: string | null = null;
-    const videoResp = await fetch(videoUrl, { headers: { 'user-agent': FETCH_UA }, signal: AbortSignal.timeout(30_000) });
-    if (videoResp.ok) {
-      const videoHtml = await videoResp.text();
+    for (const item of blocks) {
+      const videoUrl = `${JAVDB_E2E_HOST}/v/${item.id}`;
+      const videoHtml = await siteFetchText(videoUrl, { userAgent: FETCH_UA });
+      if (!videoHtml) continue;
       const actorLinks = Array.from(videoHtml.matchAll(/href="\/actors\/([A-Za-z0-9]+)"/g));
       for (const match of actorLinks) {
         const actorId = match[1];
         if (!NAV_ACTOR_IDS.has(actorId)) {
-          actorUrl = `${JAVDB_E2E_HOST}/actors/${actorId}`;
-          break;
+          return { videoId: item.id, videoCode: item.code, videoUrl, actorUrl: `${JAVDB_E2E_HOST}/actors/${actorId}` };
         }
       }
     }
-    return { videoId, videoCode, videoUrl, actorUrl };
+    return { videoId: first.id, videoCode: first.code, videoUrl: firstUrl, actorUrl: null };
   } catch (error) {
     console.info('[E2E main-chain] pick target failed:', error instanceof Error ? error.message : String(error));
     return null;

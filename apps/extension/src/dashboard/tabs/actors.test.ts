@@ -99,7 +99,7 @@ describe('ActorsTab initialization', () => {
 
     await vi.runOnlyPendingTimersAsync();
     expect(getStats).toHaveBeenCalledTimes(1);
-  });
+  }, 15_000); // fake-timers 时序用例：全量 377 文件并行时 worker 负载高，5s 预算偶发不够（单跑 ~360ms），放宽到 15s 防 flake
 
   it('restores the cached actor page without re-querying when data is unchanged while hidden', async () => {
     vi.useFakeTimers();

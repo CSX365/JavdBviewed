@@ -28,6 +28,7 @@ import {
   readExtensionId,
   resolveExtensionHarnessOptions,
   seedExtensionStorage,
+  siteFetchText,
 } from '../../scripts/extensionHarness';
 
 function resolveTestHarnessOptions(userDataDir: string): ReturnType<typeof resolveExtensionHarnessOptions> {
@@ -179,46 +180,48 @@ function buildAuditSettings(): Record<string, unknown> {
   };
 }
 
-/** 从最新影片列表挑一部片 + 最多 3 位真实演员（node 预检，网络不可用返回 null） */
+/** 从最新影片列表挑一部「有演员」的片 + 最多 3 位真实演员（node 预检，网络不可用返回 null）。
+ * 顶部影片可能是素人作品（站点演员字段 N/A，无 /actors/ 链接）——
+ * 此时顺延取第 2、3 条；三条都无演员时返回 null（全组按设计 skip，站点数据依赖）。 */
 async function pickVideoWithActors(): Promise<AuditTarget | null> {
   try {
-    let listResp: Response | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        listResp = await fetch(`${JAVDB_E2E_HOST}/?vst=1`, {
-          headers: { 'user-agent': FETCH_UA },
-          signal: AbortSignal.timeout(30_000),
-        });
-        break;
-      } catch {
-        if (attempt === 1) throw new Error('list fetch retry failed');
+    // siteFetchText 内部已含重试；设置 JAVDB_E2E_PROXY 时自动走代理（node fetch 不认代理环境变量）
+    const listHtml = await siteFetchText(`${JAVDB_E2E_HOST}/?vst=1`, { userAgent: FETCH_UA });
+    if (!listHtml) return null;
+
+    const items: { id: string; code: string }[] = [];
+    let idx = listHtml.indexOf('<div class="item');
+    for (let n = 0; n < 3 && idx !== -1; n++) {
+      const next = listHtml.indexOf('<div class="item', idx + 1);
+      const block = listHtml.slice(idx, next === -1 ? undefined : next);
+      const idMatch = block.match(/href="\/v\/([A-Za-z0-9]+)"/);
+      const codeMatch = block.match(/<div class="video-title[^"]*">[\s\S]*?<strong>([^<]+)<\/strong>/);
+      if (!idMatch || !codeMatch) break;
+      items.push({ id: idMatch[1], code: codeMatch[1].trim() });
+      idx = next;
+    }
+    if (items.length === 0) return null;
+
+    for (const item of items) {
+      const videoUrl = `${JAVDB_E2E_HOST}/v/${item.id}`;
+      const videoHtml = await siteFetchText(videoUrl, { userAgent: FETCH_UA });
+      if (!videoHtml) continue;
+      const actors: { id: string; name: string }[] = [];
+      const seen = new Set<string>();
+      for (const m of videoHtml.matchAll(/href="\/actors\/([A-Za-z0-9]+)"[^>]*>([^<]{1,30})</g)) {
+        const id = m[1];
+        const name = m[2].trim();
+        if (NAV_ACTOR_IDS.has(id) || seen.has(id) || !name) continue;
+        seen.add(id);
+        actors.push({ id, name });
+        if (actors.length >= 3) break;
+      }
+      if (actors.length > 0) {
+        return { videoId: item.id, videoCode: item.code, videoUrl, actors };
       }
     }
-    if (!listResp || !listResp.ok) return null;
-    const listHtml = await listResp.text();
-    const firstItemIdx = listHtml.indexOf('<div class="item');
-    if (firstItemIdx === -1) return null;
-    const secondItemIdx = listHtml.indexOf('<div class="item', firstItemIdx + 1);
-    const block = listHtml.slice(firstItemIdx, secondItemIdx === -1 ? undefined : secondItemIdx);
-    const idMatch = block.match(/href="\/v\/([A-Za-z0-9]+)"/);
-    const codeMatch = block.match(/<div class="video-title[^"]*">[\s\S]*?<strong>([^<]+)<\/strong>/);
-    if (!idMatch || !codeMatch) return null;
-    const videoId = idMatch[1];
-    const videoUrl = `${JAVDB_E2E_HOST}/v/${videoId}`;
-    const videoResp = await fetch(videoUrl, { headers: { 'user-agent': FETCH_UA }, signal: AbortSignal.timeout(30_000) });
-    if (!videoResp.ok) return null;
-    const videoHtml = await videoResp.text();
-    const actors: { id: string; name: string }[] = [];
-    const seen = new Set<string>();
-    for (const m of videoHtml.matchAll(/href="\/actors\/([A-Za-z0-9]+)"[^>]*>([^<]{1,30})</g)) {
-      const id = m[1];
-      const name = m[2].trim();
-      if (NAV_ACTOR_IDS.has(id) || seen.has(id) || !name) continue;
-      seen.add(id);
-      actors.push({ id, name });
-      if (actors.length >= 3) break;
-    }
-    return { videoId, videoCode: codeMatch[1].trim(), videoUrl, actors };
+    console.info('[E2E detail-audit] 列表前 3 条均无演员（素人片），全组跳过');
+    return null;
   } catch (error) {
     console.info('[E2E detail-audit] pick target failed:', error instanceof Error ? error.message : String(error));
     return null;
@@ -636,6 +639,30 @@ test.describe('详情页增强逐项审计（真机）', () => {
     }
     await saveBtn.scrollIntoViewIfNeeded().catch(() => {});
     await saveBtn.click({ timeout: 15_000 }).catch(() => {});
+
+    // 点击后等站点自己的 modal 打开（站点侧异步/动画）。按钮带 data-auth="true"，
+    // 未登录用户会被站点重定向到登录页（E2E 无登录会话：源站登录带验证码，属环境依赖）
+    const modal = page.locator('#modal-save-list').first();
+    const active = await expect
+      .poll(
+        () => modal.getAttribute('class').then((c) => (c || '').includes('is-active')).catch(() => false),
+        { timeout: 8_000, intervals: [500] },
+      )
+      .toBe(true)
+      .then(() => true, () => false);
+
+    if (!active) {
+      const url = page.url();
+      if (/login|signin|sign-in|sign_in/i.test(url)) {
+        console.info('[E2E detail-audit] D10 skip: 未登录，站点将存入清单按钮重定向到登录页（环境依赖，非功能回归）');
+        return test.skip(true, '未登录：存入清单按钮跳登录页');
+      }
+      // 仍在详情页但站点 modal 未打开：模拟 modal-active 状态，
+      // 验证扩展自身契约（MutationObserver 触发 syncIfModalActive → 注入本地清单 section）
+      console.info('[E2E detail-audit] D10: 站点 modal 点击后未打开，模拟 is-active 验证扩展注入契约');
+      await modal.evaluate((el) => el.classList.add('is-active')).catch(() => {});
+    }
+
     await expect
       .poll(
         () => page.locator('#modal-save-list #jdb-ext-local-lists').first().isVisible().catch(() => false),

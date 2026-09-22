@@ -40,6 +40,12 @@ describe('Dashboard user menu', () => {
     expect(document.getElementById('dashboard-user-menu-trigger')).toBeTruthy();
     expect(document.getElementById('dashboard-user-menu-popover')).toBeTruthy();
     expect(document.getElementById('user-profile-section')).toBeTruthy();
+
+    // S1-C：用户资料区懒加载——首次打开菜单时才加载 userProfile 模块并挂载
+    const trigger = document.getElementById('dashboard-user-menu-trigger') as HTMLButtonElement;
+    trigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     expect(document.querySelector('[data-testid="profile-mounted"]')).toBeTruthy();
     expect(userProfileMocks.initUserProfileSection).toHaveBeenCalledTimes(1);
   });

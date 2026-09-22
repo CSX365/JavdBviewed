@@ -14,6 +14,7 @@ import {
 describe('detail search links', () => {
   afterEach(() => {
     document.body.innerHTML = '';
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -478,6 +479,7 @@ describe('detail search links', () => {
     const revokeObjectURL = vi.fn(() => undefined);
     const StubURL = Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL });
     vi.stubGlobal('URL', StubURL);
+    vi.useFakeTimers();
     const clickedDownloads: string[] = [];
     const clickedHrefs: string[] = [];
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) {
@@ -496,11 +498,11 @@ describe('detail search links', () => {
 
     document.querySelector<HTMLAnchorElement>('#jdb-subtitle-search-panel a')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
 
     document.querySelector<HTMLAnchorElement>('.jdb-xunlei-subtitle-download')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(fetchSubtitle).toHaveBeenCalledWith(
       'https://subtitle.v.geilijiasu.com/71/72/7172AEEC50DD7ACBACC6D0EBEA4EB1734629AB91.srt',
@@ -509,6 +511,10 @@ describe('detail search links', () => {
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(clickedDownloads).toContain('MKMP-577.srt');
     expect(clickedHrefs).toContain('blob:subtitle-download');
+    // 推进 1200ms：让 revoke(1000ms) 与文案恢复(1200ms) 定时器在 URL stub 有效期内触发，
+    // 避免定时器逃逸到测试外、stub 还原后调 revokeObjectURL 抛未处理异常
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:subtitle-download');
   });
 
   it('以独立弹窗预览点击的 迅雷字幕内容', async () => {

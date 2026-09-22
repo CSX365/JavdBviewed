@@ -142,6 +142,9 @@ describe('backup page actions', () => {
 
     initBackupActions(document);
     document.getElementById('syncDown')?.click();
+    // 恢复向导走动态 import 懒加载（性能优化：webdavRestore 不进 dashboard 入口闭包），
+    // mock 调用落在微任务里，断言前必须 flush
+    await flushAsyncAction();
 
     expect(actionMocks.showWebDAVRestoreModal).toHaveBeenCalledTimes(1);
   });

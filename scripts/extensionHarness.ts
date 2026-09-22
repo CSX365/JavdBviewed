@@ -7,10 +7,14 @@ import { chromium, type BrowserContext, type Worker } from '@playwright/test';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import type { Dirent } from 'node:fs';
 import { attachReplay, type ReplayHandle } from './perfReplay';
+
+const execFileP = promisify(execFile);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_REFRESH_DAYS = 10;
@@ -442,6 +446,47 @@ export async function retryTransientFileSystemOperation<T>(
   throw new Error('文件系统操作重试状态异常');
 }
 
+/** 测试机直连源站不稳时，设置 JAVDB_E2E_PROXY（如 http://127.0.0.1:10808）让 node 预检 fetch 与浏览器都走代理；未设置时行为完全不变 */
+export function e2eProxyServer(): string | null {
+  const proxy = (process.env.JAVDB_E2E_PROXY ?? '').trim();
+  return proxy || null;
+}
+
+/** 源站 HTML fetch：未设代理走 node 原生 fetch（默认 2 次重试，与既有预检口径一致）；
+ * 设置代理时走 curl -x（node fetch 不认代理环境变量），HTTP 非 2xx 由 curl -f 触发重试 */
+export async function siteFetchText(
+  url: string,
+  opts: { userAgent: string; timeoutMs?: number; attempts?: number },
+): Promise<string | null> {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const attempts = opts.attempts ?? 2;
+  const proxy = e2eProxyServer();
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      if (!proxy) {
+        const resp = await fetch(url, {
+          headers: { 'user-agent': opts.userAgent },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!resp.ok) continue;
+        return await resp.text();
+      }
+      const outFile = path.join(os.tmpdir(), `jdb-e2e-fetch-${process.pid}-${Date.now()}-${attempt}.html`);
+      await execFileP('curl', [
+        '-sS', '-x', proxy,
+        '--max-time', String(Math.ceil(timeoutMs / 1000)),
+        '-A', opts.userAgent, '-f', '-o', outFile, url,
+      ]);
+      const body = await fs.readFile(outFile, 'utf8');
+      await fs.rm(outFile, { force: true }).catch(() => undefined);
+      return body;
+    } catch {
+      // 瞬时抖动重试
+    }
+  }
+  return null;
+}
+
 export async function launchExtensionContext(
   harnessOptions: ExtensionHarnessOptions,
   launchOptions: LaunchExtensionContextOptions = {},
@@ -450,10 +495,11 @@ export async function launchExtensionContext(
   const args = createChromiumExtensionArgs(harnessOptions.extensionDir);
   const replayDir = resolveE2eReplayDir();
   const extraArgs = [...(launchOptions.extraArgs ?? [])];
-  if (replayDir) {
-    // 回放模式：源站走代理兜底（直连 CDN 路由断），本地回环地址直连（cloud 自托管/本地 mock 不经代理）
+  // 回放模式：源站走代理兜底（直连 CDN 路由断）；显式设置 JAVDB_E2E_PROXY 时（含非回放模式）同样走代理
+  //（测试机直连源站不可达场景）。本地回环地址直连（cloud 自托管/本地 mock 不经代理）。
+  const proxy = (process.env.JAVDB_E2E_PROXY ?? (replayDir ? 'http://127.0.0.1:10808' : '')).trim();
+  if (proxy) {
     extraArgs.filter((arg) => arg !== '--no-proxy-server');
-    const proxy = (process.env.JAVDB_E2E_PROXY ?? 'http://127.0.0.1:10808').trim();
     extraArgs.push(`--proxy-server=${proxy}`, '--proxy-bypass-list=<-loopback>');
   }
   if (extraArgs.length) {
