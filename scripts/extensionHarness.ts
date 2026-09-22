@@ -24,6 +24,32 @@ const RELEASE_ANNOUNCEMENT_STATE_KEY = 'release_announcement_state';
 const RELEASE_ANNOUNCEMENT_POLL_INTERVAL_MS = 100;
 const RELEASE_ANNOUNCEMENT_SUPPRESSION_TIMEOUT_MS = 5_000;
 
+const REPO_DIR_NAME = 'JavdBviewed';
+
+/**
+ * 防「大小写孪生目录」陷阱：曾因路径大小写笔误（JavDBviewed）在仓库根旁创建过假根目录，
+ * 其下沉淀的测试数据在 Windows（大小写不敏感文件系统）上与真仓库 JavdBviewed 互斥，
+ * 直接卡死 Syncthing 同步。只拦截「与仓库目录名仅大小写不同」的路径段；
+ * 其他合法目录名（CI 检出目录等）不受影响。
+ */
+export function assertNoCaseTwinRepoDir(...paths: Array<string | undefined>): void {
+  const seen = new Set<string>();
+  for (const candidate of paths) {
+    if (!candidate || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    for (const segment of candidate.split(/[\\/]/)) {
+      if (segment.toLowerCase() === REPO_DIR_NAME.toLowerCase() && segment !== REPO_DIR_NAME) {
+        throw new Error(
+          `[extensionHarness] 检测到大小写错误的仓库目录「${segment}」（正确为「${REPO_DIR_NAME}」）：${candidate}。` +
+            '大小写不敏感文件系统（如 Windows）上这类目录会与真仓库冲突并卡死 Syncthing 同步，请先删除该目录再运行测试。',
+        );
+      }
+    }
+  }
+}
+
 export interface ChromeDataSnapshotSettings {
   sourceUserDataDir: string;
   sourceProfile?: string;
@@ -110,6 +136,11 @@ export function resolveExtensionHarnessOptions(
         refreshDays: DEFAULT_SNAPSHOT_REFRESH_DAYS,
       }
     : { enabled: false };
+
+  const snapshotPaths = chromeDataSnapshot.enabled
+    ? [chromeDataSnapshot.snapshotDir, chromeDataSnapshot.metadataPath]
+    : [];
+  assertNoCaseTwinRepoDir(cwd, extensionDir, userDataDir, ...snapshotPaths);
 
   return {
     extensionDir,

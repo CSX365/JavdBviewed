@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  assertNoCaseTwinRepoDir,
   createChromiumExtensionArgs,
   defaultExtensionProfileDir,
   ensureChromeDataSnapshot,
@@ -78,6 +79,17 @@ describe('extensionHarness', () => {
     expect(options.extensionDir).toBe(path.join(cwd, 'tmp/dist-extension'));
     expect(options.userDataDir).toBe(path.join(cwd, '.tmp/profile'));
     expect(options.startupUrl).toBe('https://example.test/page');
+  });
+
+  test('rejects case-twin repo directory names but allows other checkout names', () => {
+    expect(() => assertNoCaseTwinRepoDir('C:/work/JavDBviewed/.test-profiles')).toThrowError(/大小写错误/);
+    expect(() => assertNoCaseTwinRepoDir('/home/ryen/Git/JavdBviewed-project/JavDBviewed')).toThrowError(/JavDBviewed/);
+    expect(() => assertNoCaseTwinRepoDir(path.resolve('F:/repo/JavdBviewed'))).not.toThrow();
+    expect(() => assertNoCaseTwinRepoDir('/tmp/jdb-checkout-123')).not.toThrow();
+    expect(() => resolveExtensionHarnessOptions({}, 'F:/repo/JavDBviewed')).toThrowError(/大小写错误/);
+    expect(() => resolveExtensionHarnessOptions({
+      JAVDB_EXTENSION_PROFILE: '.test-profiles/perf-s0',
+    }, 'D:/Git/JavdBviewed-project/JavDBviewed')).toThrowError(/大小写错误/);
   });
 
   test('only disables the real Chrome data baseline through an explicit environment switch', () => {
