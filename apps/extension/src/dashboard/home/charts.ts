@@ -322,12 +322,17 @@ interface HomeTrendRenderArgs {
   linePlot: any;
   charts: Record<string, any>;
   canRender: () => boolean;
+  /** cycle-9 A2：只渲指定一张趋势图（首渲串行队列拆帧用）；缺省全渲。 */
+  only?: 'records' | 'actors' | 'newWorks';
 }
 
 async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
   const { recordsTrendEl, actorsTrendEl, newWorksTrendEl, range, records, actors, newWorks, colors, linePlot, charts, canRender } = args;
+  const doRecords = !args.only || args.only === 'records';
+  const doActors = !args.only || args.only === 'actors';
+  const doNewWorks = !args.only || args.only === 'newWorks';
   try {
-    if (recordsTrendEl) {
+    if (doRecords && recordsTrendEl) {
       await yieldToBrowser();
       if (!canRender()) return;
       hideChartLoading(recordsTrendEl);
@@ -363,7 +368,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
       }, data);
     }
 
-    if (actorsTrendEl) {
+    if (doActors && actorsTrendEl) {
       await yieldToBrowser();
       if (!canRender()) return;
       hideChartLoading(actorsTrendEl);
@@ -399,7 +404,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
       }, data);
     }
 
-    if (newWorksTrendEl) {
+    if (doNewWorks && newWorksTrendEl) {
       await yieldToBrowser();
       if (!canRender()) return;
       hideChartLoading(newWorksTrendEl);
@@ -1041,6 +1046,12 @@ async function renderHomeCharts(): Promise<void> {
     const HC: any = (W.__HOME_CHARTS__ = W.__HOME_CHARTS__ || {});
     const summaryRenderQueue = createHomeChartRenderQueue();
     HC.__summaryRenderQueue = summaryRenderQueue;
+    // cycle-9 A2：G2Plot 首渲 5 图（趋势 3 Line + 状态 donut + 新作品 bars）统一进一条串行队列，
+    // 任务间强制让 2 帧。旧实现趋势(3图)/donut/bars 各排独立空闲回调（timeout 2500ms），
+    // 5 张重渲染挤同一空闲窗（基线：2.8–5.1s 内 9 帧 ≥100ms，含一个 223ms longtask）。
+    // 队列每 pass 新建，死亡 session 的任务体由 session 校验自然失效，无需跨 pass cancel。
+    const firstRenderQueue = createHomeChartRenderQueue({ timeoutMs: 2500, gapFrames: 2 });
+    HC.__firstRenderQueue = firstRenderQueue;
     const getVar = (name: string, fallback: string) => {
       try {
         const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -1075,24 +1086,25 @@ async function renderHomeCharts(): Promise<void> {
     } catch {}
 
     // 趋势图不是首屏交互必需项，延迟到空闲时段，避免阻塞摘要和导航响应。
+    // cycle-9 A2：3 张趋势图从「1 个任务串行渲 3 图」拆成 3 个独立任务入队，
+    // 图与图之间由队列强制让帧，避免与 donut/bars/tagsTop 堆在同一空闲窗。
     try {
-      const previousTrendTask = HC.__trendRenderTask as { cancel?: () => void } | undefined;
-      previousTrendTask?.cancel?.();
-      HC.__trendRenderTask = scheduleHomeChartRender(() => {
-        void renderHomeTrendCharts({
-          recordsTrendEl,
-          actorsTrendEl,
-          newWorksTrendEl,
-          range: r,
-          records: homeTrendRecords,
-          actors: homeTrendActors,
-          newWorks: homeTrendNewWorks,
-          colors: COLORS,
-          linePlot: Line,
-          charts: HC,
-          canRender: () => isHomeChartSessionActive(session),
-        });
-      }, { timeoutMs: 2500 });
+      const trendArgs = {
+        recordsTrendEl,
+        actorsTrendEl,
+        newWorksTrendEl,
+        range: r,
+        records: homeTrendRecords,
+        actors: homeTrendActors,
+        newWorks: homeTrendNewWorks,
+        colors: COLORS,
+        linePlot: Line,
+        charts: HC,
+        canRender: () => isHomeChartSessionActive(session),
+      };
+      firstRenderQueue.enqueue(() => renderHomeTrendCharts({ ...trendArgs, only: 'records' }));
+      firstRenderQueue.enqueue(() => renderHomeTrendCharts({ ...trendArgs, only: 'actors' }));
+      firstRenderQueue.enqueue(() => renderHomeTrendCharts({ ...trendArgs, only: 'newWorks' }));
     } catch {}
 
     try {
@@ -1104,54 +1116,60 @@ async function renderHomeCharts(): Promise<void> {
       try { console.info('[INSIGHTS] home g2plot summary ready', { tagsTop: homeTagsTop.length }); } catch {}
     } catch {}
 
+    // cycle-9 A2：状态 donut 进首渲串行队列（保留 L-4 视口滚入门控；
+    // 主流程不再内联等待渲染，summary 就绪后任务体直接取闭包数据）
     try {
       if (statusEl) {
-        await yieldToBrowser();
-        // L-4：状态分布卡在视口外时等待滚入再渲染（首屏只渲染趋势行）
-        await whenChartShellVisible(statusShell, session);
-        if (!isHomeChartSessionActive(session)) return;
-        hideLoading(statusEl);
-        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        const data = buildHomeStatusData(s, COLORS, isDark);
-        const total = data.reduce((sum, datum) => sum + Number(datum.value || 0), 0);
-        const statusOptions = buildHomeStatusDonutOptions(COLORS);
-        updateG2Plot(HC, 'statusDonut', Pie, statusEl, {
-          angleField: 'value',
-          colorField: 'name',
-          autoFit: false,
-          radius: 0.72,
-          innerRadius: 0.46,
-          legend: { position: 'bottom', itemName: { style: { fill: COLORS.muted, fontSize: 12 } } },
-          label: statusOptions.label,
-          statistic: {
-            title: statusOptions.statistic.title,
-            content: { content: String(total), style: { fill: COLORS.text, fontSize: 16, fontWeight: 700 } },
-          },
-          tooltip: { showTitle: false },
-          color: data.map((datum) => datum.color),
-        }, data);
+        firstRenderQueue.enqueue(async () => {
+          if (!isHomeChartSessionActive(session)) return;
+          // L-4：状态分布卡在视口外时等待滚入再渲染（首屏只渲染趋势行）
+          await whenChartShellVisible(statusShell, session);
+          if (!isHomeChartSessionActive(session)) return;
+          hideLoading(statusEl);
+          const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+          const data = buildHomeStatusData(s, COLORS, isDark);
+          const total = data.reduce((sum, datum) => sum + Number(datum.value || 0), 0);
+          const statusOptions = buildHomeStatusDonutOptions(COLORS);
+          updateG2Plot(HC, 'statusDonut', Pie, statusEl, {
+            angleField: 'value',
+            colorField: 'name',
+            autoFit: false,
+            radius: 0.72,
+            innerRadius: 0.46,
+            legend: { position: 'bottom', itemName: { style: { fill: COLORS.muted, fontSize: 12 } } },
+            label: statusOptions.label,
+            statistic: {
+              title: statusOptions.statistic.title,
+              content: { content: String(total), style: { fill: COLORS.text, fontSize: 16, fontWeight: 700 } },
+            },
+            tooltip: { showTitle: false },
+            color: data.map((datum) => datum.color),
+          }, data);
+        });
       }
     } catch {}
 
+    // cycle-9 A2：新作品 bars 进首渲串行队列
     try {
       if (barsEl) {
-        await yieldToBrowser();
-        if (!isHomeChartSessionActive(session)) return;
-        hideLoading(barsEl);
-        const data = [
-          { type: '今日发现', value: w?.today ?? 0 },
-          { type: '本周发现', value: w?.week ?? 0 },
-          { type: '未读', value: w?.unread ?? 0 },
-        ];
-        updateG2Plot(HC, 'newWorksBars', Column, barsEl, {
-          xField: 'type',
-          yField: 'value',
-          columnStyle: { radius: [6,6,0,0] },
-          color: COLORS.primary,
-          label: { position: 'top' },
-    autoFit: false,
-    animation: false,
-        }, data);
+        firstRenderQueue.enqueue(async () => {
+          if (!isHomeChartSessionActive(session)) return;
+          hideLoading(barsEl);
+          const data = [
+            { type: '今日发现', value: w?.today ?? 0 },
+            { type: '本周发现', value: w?.week ?? 0 },
+            { type: '未读', value: w?.unread ?? 0 },
+          ];
+          updateG2Plot(HC, 'newWorksBars', Column, barsEl, {
+            xField: 'type',
+            yField: 'value',
+            columnStyle: { radius: [6,6,0,0] },
+            color: COLORS.primary,
+            label: { position: 'top' },
+            autoFit: false,
+            animation: false,
+          }, data);
+        });
       }
     } catch {}
 

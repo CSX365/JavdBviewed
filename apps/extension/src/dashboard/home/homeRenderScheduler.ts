@@ -71,22 +71,36 @@ export function scheduleDeferredRender(
   };
 }
 
-export function createHomeChartRenderQueue(options: { timeoutMs?: number } = {}): {
-  enqueue: (render: () => void) => void;
+export function createHomeChartRenderQueue(
+  options: { timeoutMs?: number; gapFrames?: number } = {},
+): {
+  enqueue: (render: () => void | Promise<void>) => void;
   cancel: () => void;
 } {
-  const pending: Array<() => void> = [];
+  const pending: Array<() => void | Promise<void>> = [];
   let active: HomeChartRenderTask | null = null;
+  // cycle-9 A2：任务间帧间隙。旧实现在上一个空闲回调内就排下一个，
+  // 连续图表渲染会在同一帧内背靠背执行（首渲爆发）；
+  // 现在等当前任务体（含 async 尾部）完成后让出 gapFrames 帧再排下一个。
+  const gapFrames = Math.max(0, options.gapFrames ?? 0);
   const scheduleNext = (): void => {
     if (active || pending.length === 0) return;
-    active = scheduleHomeChartRender(() => {
+    const body = pending.shift();
+    if (!body) return;
+    active = scheduleHomeChartRender(async () => {
+      const result = body();
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        try { await (result as Promise<void>); } catch { /* 任务体内部异常自吞 */ }
+      }
+      for (let i = 0; i < gapFrames; i += 1) {
+        try { await yieldToBrowser(); } catch { break; }
+      }
       active = null;
-      pending.shift()?.();
       scheduleNext();
     }, options);
   };
   return {
-    enqueue: (render: () => void): void => {
+    enqueue: (render: () => void | Promise<void>): void => {
       pending.push(render);
       scheduleNext();
     },
