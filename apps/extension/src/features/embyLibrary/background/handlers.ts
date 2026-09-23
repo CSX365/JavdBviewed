@@ -222,23 +222,68 @@ async function saveExternalWatchEvidenceForEntry(input: {
   }
 }
 
+/** 全量同步分页大小（单次请求条目数）：请求次数与单包体量的折中 */
+const EMBY_ITEMS_PAGE_SIZE = 500;
+/** 全量同步分页页数上限（500×400=20 万条，远超正常媒体库）：防服务端异常时死循环 */
+const EMBY_ITEMS_MAX_PAGES = 400;
+
+interface EmbyItemsPage {
+  Items: EmbyMediaItem[];
+  TotalRecordCount: number;
+}
+
 async function fetchAllMediaItems(
   server: EmbyMediaServer,
   fetchImpl: typeof fetch,
   searchTerm?: string,
   parentId?: string,
 ): Promise<EmbyMediaItem[]> {
+  // 搜索场景：结果量天然有界，保持单请求（行为与原来一致）
+  if (searchTerm) {
+    const page = await fetchMediaItemsPage(server, fetchImpl, { searchTerm, parentId });
+    return page.Items;
+  }
+  // 全量同步场景：分页拉取。单包从整库缩到一页，45s 超时窗口按页拆分，
+  // 也降低 SW 内单包 JSON 的峰值内存；任一页失败抛错，保持整体 all-or-nothing
+  const first = await fetchMediaItemsPage(server, fetchImpl, { parentId, startIndex: 0 });
+  const items: EmbyMediaItem[] = [...first.Items];
+  // 以首页 TotalRecordCount 为总量（越界页在部分服务器上会回 0，不能重新读取）
+  const total = first.TotalRecordCount > 0 ? first.TotalRecordCount : first.Items.length;
+  let pages = 1;
+  while (items.length < total && pages < EMBY_ITEMS_MAX_PAGES) {
+    const next = await fetchMediaItemsPage(server, fetchImpl, { parentId, startIndex: items.length });
+    if (next.Items.length === 0) break;
+    items.push(...next.Items);
+    pages += 1;
+  }
+  // 跨页期间库若有增删可能出现错位/重复，按 Id 去重保持与单包一致的语义
+  return deduplicateMediaItemsById(items);
+}
+
+/**
+ * 拉取单页 Movie 列表（单请求独立 45s 超时，失败抛错，由调用方决定整体成败）
+ */
+async function fetchMediaItemsPage(
+  server: EmbyMediaServer,
+  fetchImpl: typeof fetch,
+  opts: { searchTerm?: string; parentId?: string; startIndex?: number },
+): Promise<EmbyItemsPage> {
   const params = new URLSearchParams({
     Recursive: 'true',
     IncludeItemTypes: 'Movie',
     // 仅请求官方稳定 Fields；ParentThumb* 若服务端有会自带，不强制写入 Fields 以免部分版本 4xx
-    Fields: 'Path,PrimaryImageAspectRatio,ImageTags,PrimaryImageTag,BackdropImageTags,UserData,RunTimeTicks',
+    // PrimaryImageAspectRatio 仅详情页单条目请求（embyItemDetail）使用，列表同步不读，瘦身掉
+    Fields: 'Path,ImageTags,PrimaryImageTag,BackdropImageTags,UserData,RunTimeTicks',
   });
-  if (searchTerm) {
-    params.set('SearchTerm', searchTerm);
+  if (opts.searchTerm) {
+    params.set('SearchTerm', opts.searchTerm);
   }
-  if (parentId) {
-    params.set('ParentId', parentId);
+  if (opts.parentId) {
+    params.set('ParentId', opts.parentId);
+  }
+  if (typeof opts.startIndex === 'number') {
+    params.set('Limit', String(EMBY_ITEMS_PAGE_SIZE));
+    params.set('StartIndex', String(opts.startIndex));
   }
   // 无用户令牌时退回 api_key
   if (!server.accessToken && server.apiKey) {
@@ -289,7 +334,10 @@ async function fetchAllMediaItems(
     throw new Error('数据解析失败');
   }
 
-  return Array.isArray(data?.Items) ? data.Items : [];
+  return {
+    Items: Array.isArray(data?.Items) ? data.Items : [],
+    TotalRecordCount: Number(data?.TotalRecordCount) || 0,
+  };
 }
 
 async function resolveConfiguredWatchUserId(

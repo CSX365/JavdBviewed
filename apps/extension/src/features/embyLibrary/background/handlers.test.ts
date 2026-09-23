@@ -79,7 +79,7 @@ describe('emby library background handlers', () => {
     await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://media.local:8096/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path%2CPrimaryImageAspectRatio%2CImageTags%2CPrimaryImageTag%2CBackdropImageTags%2CUserData%2CRunTimeTicks&api_key=api-secret',
+      'http://media.local:8096/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path%2CImageTags%2CPrimaryImageTag%2CBackdropImageTags%2CUserData%2CRunTimeTicks&Limit=500&StartIndex=0&api_key=api-secret',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(deps.saveState).toHaveBeenCalledWith(expect.objectContaining({
@@ -114,6 +114,170 @@ describe('emby library background handlers', () => {
         }),
       ],
     });
+  });
+
+  describe('fetchAllMediaItems 分页（全量同步）', () => {
+    function makeItems(prefix: string, from: number, count: number) {
+      return Array.from({ length: count }, (_, i) => {
+        const n = from + i;
+        return {
+          Id: `${prefix}-${n}`,
+          Name: `MOV-${String(n).padStart(4, '0')} Sample`,
+          Path: `/movies/MOV-${String(n).padStart(4, '0')}.mkv`,
+        };
+      });
+    }
+
+    it('按 500 条一页拉取并拼装完整结果', async () => {
+      const sendResponse = vi.fn();
+      const all = makeItems('pg', 1, 1201);
+      const fetchImpl = createFetchMock(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        const start = Number(url.searchParams.get('StartIndex') ?? '0');
+        const limit = Number(url.searchParams.get('Limit') ?? '0');
+        const slice = all.slice(start, start + limit);
+        return new Response(JSON.stringify({
+          Items: slice,
+          TotalRecordCount: all.length,
+        }), { status: 200 });
+      });
+      const deps = createDeps(fetchImpl);
+
+      await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+      // 1201 条 → 500 + 500 + 201，共 3 次请求
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      const startIndexes = fetchImpl.mock.calls
+        .map(([url]) => new URL(String(url)).searchParams.get('StartIndex'));
+      expect(startIndexes).toEqual(['0', '500', '1000']);
+      for (const [url] of fetchImpl.mock.calls) {
+        const u = new URL(String(url));
+        expect(u.searchParams.get('Limit')).toBe('500');
+        expect(u.searchParams.get('Fields')).not.toContain('PrimaryImageAspectRatio');
+      }
+      const savedState = deps.saveState.mock.calls[0][0] as EmbyLibraryState;
+      // 代码可解析的条目全部入库
+      expect(Object.keys(savedState.entries).length).toBe(1201);
+      expect(savedState.entries['MOV-0001']).toBeDefined();
+      expect(savedState.entries['MOV-1201']).toBeDefined();
+    });
+
+    it('小库（不足一页）只发一次请求', async () => {
+      const sendResponse = vi.fn();
+      const fetchImpl = createFetchMock(async () => new Response(JSON.stringify({
+        Items: makeItems('sm', 1, 80),
+        TotalRecordCount: 80,
+      }), { status: 200 }));
+      const deps = createDeps(fetchImpl);
+
+      await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.get('StartIndex')).toBe('0');
+    });
+
+    it('跨页重复条目按 Id 去重', async () => {
+      const sendResponse = vi.fn();
+      const overlap = { Id: 'dup-1', Name: 'MOV-0500 Sample', Path: '/movies/MOV-0500.mkv' };
+      const fetchImpl = createFetchMock(async (input: RequestInfo | URL) => {
+        const start = Number(new URL(String(input)).searchParams.get('StartIndex') ?? '0');
+        if (start === 0) {
+          return new Response(JSON.stringify({
+            Items: [...makeItems('pg', 1, 499), overlap],
+            TotalRecordCount: 1000,
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          Items: [overlap, ...makeItems('pg', 501, 499)],
+          TotalRecordCount: 1000,
+        }), { status: 200 });
+      });
+      const deps = createDeps(fetchImpl);
+
+      await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const savedState = deps.saveState.mock.calls[0][0] as EmbyLibraryState;
+      expect(savedState.entries['MOV-0500']).toHaveLength(1);
+      expect(Object.keys(savedState.entries).length).toBe(999);
+    });
+
+    it('中间页失败时整体失败，保留上一次的索引', async () => {
+      const sendResponse = vi.fn();
+      const previousState: EmbyLibraryState = {
+        entries: {
+          'OLD-100': [{
+            serverType: 'emby',
+            serverName: 'Main',
+            serverUrl: 'http://media.local:8096',
+            itemId: 'old-1',
+            itemName: 'OLD-100',
+            updatedAt: 100,
+          }],
+        },
+        updatedAt: 100,
+        serverResults: [],
+      };
+      const fetchImpl = createFetchMock(async (input: RequestInfo | URL) => {
+        const start = Number(new URL(String(input)).searchParams.get('StartIndex') ?? '0');
+        if (start === 0) {
+          return new Response(JSON.stringify({
+            Items: makeItems('pg', 1, 500),
+            TotalRecordCount: 1200,
+          }), { status: 200 });
+        }
+        return new Response('boom', { status: 500 });
+      });
+      const deps = createDeps(fetchImpl, previousState);
+
+      await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const savedState = deps.saveState.mock.calls[0][0] as EmbyLibraryState;
+      // 失败页之后的部分不能入库，旧条目必须保留
+      expect(savedState.entries['OLD-100']).toBeDefined();
+      expect(Object.keys(savedState.entries).length).toBe(1);
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ success: false, synced: 0, failed: 1 }));
+    });
+
+    it('服务端总量异常时以空页终止，不死循环', async () => {
+      const sendResponse = vi.fn();
+      const fetchImpl = createFetchMock(async (input: RequestInfo | URL) => {
+        const start = Number(new URL(String(input)).searchParams.get('StartIndex') ?? '0');
+        if (start === 0) {
+          return new Response(JSON.stringify({
+            Items: makeItems('pg', 1, 500),
+            TotalRecordCount: 999999,
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ Items: [], TotalRecordCount: 0 }), { status: 200 });
+      });
+      const deps = createDeps(fetchImpl);
+
+      await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const savedState = deps.saveState.mock.calls[0][0] as EmbyLibraryState;
+      expect(Object.keys(savedState.entries).length).toBe(500);
+    });
+  });
+
+  it('搜索路径（check codes）不分页，请求不带 Limit/StartIndex', async () => {
+    const sendResponse = vi.fn();
+    const fetchImpl = createFetchMock(async () => new Response(JSON.stringify({
+      Items: [],
+    }), { status: 200 }));
+    const deps = createDeps(fetchImpl);
+
+    await handleEmbyLibraryCheckCodes({ codes: ['abc-201'] }, sendResponse, deps);
+
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0);
+    for (const [url] of fetchImpl.mock.calls) {
+      const u = new URL(String(url));
+      expect(u.searchParams.get('Limit')).toBeNull();
+      expect(u.searchParams.get('StartIndex')).toBeNull();
+      expect(u.searchParams.get('SearchTerm')).toBeTruthy();
+    }
   });
 
   it('updates cleanup and deletion history after a successful server sync', async () => {
