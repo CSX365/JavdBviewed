@@ -368,6 +368,12 @@
   box-sizing: border-box;
 }
 
+/* cycle-9 A1: 图表卡片渲染隔离——卡片已有 overflow:hidden + isolation:isolate，
+   无逃逸元素；contain 保证单卡布局/重绘不扩散到同页其他卡片与页面 */
+.home-charts .chart-card {
+  contain: layout paint style;
+}
+
 .home-charts .chart-card {
   position: relative;
   display: flex;
