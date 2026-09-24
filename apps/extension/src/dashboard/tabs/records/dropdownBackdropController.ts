@@ -13,6 +13,14 @@ export interface RecordsDropdownBackdropController {
 function isDropdownOpen(dropdown: HTMLElement | null | undefined): boolean {
   try {
     if (!dropdown) return false;
+    // 性能修复：下拉框开合状态全程由内联 style 读写（HTML 初始 style="display:none;"，
+    // 所有开/合点只写 style.display），因此直接读内联 display 与 computed 结果等价，
+    // 且不会触发强制样式重算。records 页 CSS 规则约 2 万条，getComputedStyle 会强制
+    // 全量重算（实测 20-80ms），而本函数经由 document 级 click 监听在 dashboard 每次
+    // 点击时都会被调用，是 S0 真机检测坐实的 CPU 热点。
+    const inlineDisplay = dropdown.style.display;
+    if (inlineDisplay !== '') return inlineDisplay !== 'none';
+    // 内联被外部清空（理论边界）时回退 computed，保持行为一致
     return window.getComputedStyle(dropdown).display !== 'none';
   } catch {
     return false;

@@ -32,6 +32,10 @@
   ],
   "exclude": [
     "apps/extension/src/**/*.test.ts",
+    "scripts/probe*.ts",
+    "scripts/_tmp*.ts",
+    "scripts/perfS0MemoryAttribution.ts",
+    "scripts/siteverify/**",
     "apps/extension/src/**/*.test.tsx",
     "apps/extension/src/**/__tests__/**",
     "scripts/**/*.test.ts",
