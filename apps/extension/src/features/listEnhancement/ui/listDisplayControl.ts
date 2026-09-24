@@ -22,7 +22,7 @@ export interface ApplyListDisplayControlResult {
 }
 
 const STYLE_ID = 'x-list-display-control';
-const ALLOWED_DOMAINS = ['javdb.com', 'javdb570.com'];
+const ALLOWED_DOMAINS = ['javdb.com', 'javdb570.com', 'javdb575.com'];
 
 export function applyListDisplayControl(options: ApplyListDisplayControlOptions): ApplyListDisplayControlResult {
   const { document: documentRef, window: windowRef, control } = options;

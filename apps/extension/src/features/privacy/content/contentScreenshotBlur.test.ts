@@ -29,6 +29,7 @@ describe('content screenshot privacy', () => {
     it('recognizes JavBus content pages without matching unrelated hosts', () => {
         expect(getContentPageKind(new URL('https://www.javbus.com/ABP-123'))).toBe('javbus-detail');
         expect(getContentPageKind(new URL('https://javdb570.com/v/abc123'))).toBe('javdb-detail');
+        expect(getContentPageKind(new URL('https://javdb575.com/v/abc123'))).toBe('javdb-detail');
         expect(getContentPageKind(new URL('https://seejav.cyou/ABP-123'))).toBe('javbus-detail');
         expect(getContentPageKind(new URL('https://example.com/v/abc123'))).toBeNull();
         expect(getContentPageBlurSelectors(new URL('https://www.javbus.com/ABP-123'))).toContain('.movie');

@@ -57,7 +57,7 @@ const SELECTORS: Record<ContentPageKind, readonly string[]> = {
     'javbus-actor': ['.star-box', '.star-photo', '.star-info'],
 };
 
-const JAVDB_HOSTS = new Set(['javdb.com', 'javdb570.com', 'javdb36.com']);
+const JAVDB_HOSTS = new Set(['javdb.com', 'javdb570.com', 'javdb575.com', 'javdb36.com']);
 const JAVBUS_HOSTS = new Set(['javbus.com', 'seejav.cyou', 'busjav.cyou', 'fanbus.cyou']);
 
 function getSite(hostname: string): 'javdb' | 'javbus' | null {

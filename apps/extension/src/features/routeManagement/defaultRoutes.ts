@@ -19,9 +19,15 @@ export function createDefaultRouteSettings(now = Date.now()): RouteSettings {
           addedAt: now,
         },
         {
-          url: 'https://javdb36.com',
+          url: 'https://javdb575.com',
           enabled: true,
           description: '备用线路2',
+          addedAt: now,
+        },
+        {
+          url: 'https://javdb36.com',
+          enabled: true,
+          description: '备用线路3',
           addedAt: now,
         },
       ],

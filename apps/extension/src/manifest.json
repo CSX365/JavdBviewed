@@ -17,6 +17,7 @@
     "*://*.javdb.com/*",
     "*://javdb.com/*",
     "*://javdb570.com/*",
+    "*://javdb575.com/*",
     "https://dav.jianguoyun.com/*",
     "https://*.teracloud.jp/*",
     "https://*.webdav.yandex.com/*",
@@ -51,7 +52,8 @@
         "*://*.javbus.com/*",
         "*://*.javdb.com/*",
         "*://javdb.com/*",
-        "*://javdb570.com/*"
+        "*://javdb570.com/*",
+        "*://javdb575.com/*"
       ],
       "js": [
         "content/index.ts"

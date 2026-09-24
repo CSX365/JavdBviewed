@@ -88,7 +88,9 @@ export function isSuperRankingSupportedHost(hostname = window.location.hostname)
   return host === 'javdb.com'
     || host.endsWith('.javdb.com')
     || host === 'javdb570.com'
-    || host.endsWith('.javdb570.com');
+    || host.endsWith('.javdb570.com')
+    || host === 'javdb575.com'
+    || host.endsWith('.javdb575.com');
 }
 
 function escapeHtml(value: unknown): string {

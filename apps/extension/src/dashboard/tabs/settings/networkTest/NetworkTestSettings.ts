@@ -1038,6 +1038,12 @@ export class NetworkTestSettings extends BaseSettingsPanel {
                         enabled: true,
                         description: '备用线路',
                         addedAt: Date.now()
+                    },
+                    {
+                        url: 'https://javdb575.com',
+                        enabled: true,
+                        description: '备用线路2',
+                        addedAt: Date.now()
                     }
                 ]
             },

@@ -30,6 +30,7 @@ describe('networkTestSettingsModel', () => {
     expect(DEFAULT_NETWORK_TEST_FORM.proxyService).toBe('ghproxy');
     expect(DEFAULT_NETWORK_TEST_FORM.routes.javdb.primary).toBe('https://javdb.com');
     expect(DEFAULT_ROUTES.javdb.alternatives.length).toBeGreaterThanOrEqual(1);
+    expect(DEFAULT_ROUTES.javdb.alternatives.some((r) => r.url === 'https://javdb575.com')).toBe(true);
   });
 
   it('maps empty settings to defaults', () => {
@@ -139,8 +140,9 @@ describe('networkTestSettingsModel', () => {
   it('resets default routes', () => {
     const reset = resetDefaultRoutes();
     expect(reset.javdb.primary).toBe('https://javdb.com');
-    expect(reset.javdb.alternatives).toHaveLength(1);
+    expect(reset.javdb.alternatives).toHaveLength(2);
     expect(reset.javdb.alternatives[0].url).toBe('https://javdb570.com');
+    expect(reset.javdb.alternatives[1].url).toBe('https://javdb575.com');
   });
 
   it('latency helpers', () => {
