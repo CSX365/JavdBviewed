@@ -214,6 +214,8 @@ export class OnlineAvailabilityManager {
   private config: OnlineAvailabilityConfig = DEFAULT_CONFIG;
   private initialized = false;
   private currentVideoId: string | null = null;
+  /** 手动重检进行中：防重复并发探测 */
+  private rechecking = false;
 
   updateConfig(config: Partial<OnlineAvailabilityConfig>): void {
     this.config = {
@@ -236,7 +238,7 @@ export class OnlineAvailabilityManager {
     }
   }
 
-  async checkAvailability(videoId: string): Promise<void> {
+  async checkAvailability(videoId: string, force = false): Promise<void> {
     const sites = this.config.sites.filter(site => site.enabled);
     if (sites.length === 0) {
       this.renderResults([], 0);
@@ -245,10 +247,43 @@ export class OnlineAvailabilityManager {
 
     const results: OnlineAvailabilityResult[] = [];
     await Promise.all(sites.map(async site => {
-      const result = await this.checkSite(site, videoId);
+      const result = await this.checkSite(site, videoId, force);
       results.push(result);
       this.renderResults([...results], sites.length);
     }));
+  }
+
+  /**
+   * 面板"重检此番号"按钮入口：绕过缓存重探当前番号（force 跳过缓存读，结果回写缓存）。
+   * 重检进行中拒绝重入，避免同 key 并发双发。
+   */
+  recheckCurrentVideo(): Promise<void> {
+    if (!this.currentVideoId || this.rechecking) return Promise.resolve();
+    this.rechecking = true;
+    const button = document.querySelector<HTMLButtonElement>('#jdb-online-availability-panel .jdb-online-recheck');
+    if (button) {
+      button.disabled = true;
+      button.textContent = '检测中…';
+    }
+    return this.checkAvailability(this.currentVideoId, true).finally(() => {
+      this.rechecking = false;
+    });
+  }
+
+  /**
+   * 面板尾部追加"重检"按钮（复用宿主页 Bulma 样式，不引新 CSS）
+   */
+  private attachRecheckButton(panel: HTMLElement): void {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button is-light is-small jdb-online-recheck';
+    button.title = '重新检测此番号（绕过缓存）';
+    button.textContent = '重检';
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void this.recheckCurrentVideo();
+    });
+    panel.appendChild(button);
   }
 
   destroy(): void {
@@ -256,9 +291,9 @@ export class OnlineAvailabilityManager {
     document.getElementById('jdb-online-availability-panel')?.remove();
   }
 
-  private async checkSite(site: OnlineAvailabilitySite, videoId: string): Promise<OnlineAvailabilityResult> {
+  private async checkSite(site: OnlineAvailabilitySite, videoId: string, force = false): Promise<OnlineAvailabilityResult> {
     const url = buildOnlineAvailabilityUrl(site, videoId);
-    const result = await this.checkSiteUrl(site, videoId, url);
+    const result = await this.checkSiteUrl(site, videoId, url, force);
     if (result.available || site.key !== 'jable') {
       return result;
     }
@@ -268,11 +303,11 @@ export class OnlineAvailabilityManager {
       return result;
     }
 
-    const fallbackResult = await this.checkSiteUrl(site, videoId, fallbackUrl);
+    const fallbackResult = await this.checkSiteUrl(site, videoId, fallbackUrl, force);
     return fallbackResult.available ? fallbackResult : result;
   }
 
-  private async checkSiteUrl(site: OnlineAvailabilitySite, videoId: string, url: string): Promise<OnlineAvailabilityResult> {
+  private async checkSiteUrl(site: OnlineAvailabilitySite, videoId: string, url: string, force = false): Promise<OnlineAvailabilityResult> {
     const cacheId = `${String(videoId || '').trim()}|${site.key}|${url}`;
     try {
       const { data, fromCache } = await getOrFetchSessionResult(
@@ -292,8 +327,8 @@ export class OnlineAvailabilityManager {
           }), this.config.timeoutMs, `${site.name} availability check`);
           return parseOnlineAvailabilityDocument(site, doc, videoId, url, 200);
         },
-        // parser 型整页 + DOM 解析成本高，延长缓存窗口减少重复探测；get 型传 undefined 走表值（12min）
-        { ttlMs: site.fetchType === 'parser' ? PARSER_AVAILABILITY_TTL_MS : undefined },
+        // force=手动重检：跳过缓存读、结果回写缓存；parser 型整页 + DOM 解析成本高，延长缓存窗口减少重复探测；get 型传 undefined 走表值（12min）
+        { force, ttlMs: site.fetchType === 'parser' ? PARSER_AVAILABILITY_TTL_MS : undefined },
       );
       if (fromCache) {
         // 跨页复用探测结果，避免重复外网请求
@@ -327,6 +362,7 @@ export class OnlineAvailabilityManager {
         <span class="jdb-online-status">${status === 'checking' ? '检测中...' : ''}</span>
       </span>
     `;
+    this.attachRecheckButton(panel);
 
     target.parent.insertBefore(panel, target.before);
     placeSearchPanelsBelowOnlineAvailability(panel);
@@ -341,6 +377,7 @@ export class OnlineAvailabilityManager {
     const value = document.createElement('span');
     value.className = 'value jdb-online-availability-links';
     panel.appendChild(value);
+    this.attachRecheckButton(panel);
 
     const shown = results.filter(result => result.available);
     const unavailable = this.config.showUnavailable ? results.filter(result => !result.available) : [];
