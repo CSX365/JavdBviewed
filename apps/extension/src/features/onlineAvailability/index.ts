@@ -68,6 +68,13 @@ const GET_PROBE_PREFIX_BYTES = 32768;
  */
 const PROBE_FIRST_BYTE_TIMEOUT_MS = 3000;
 
+/**
+ * parser 型站点在线可看检测结果的 TTL（整页抓取 + DOM 解析，探测成本远高于 get 型）。
+ * get 型站点维持 SESSION_RESULT_TTL 表值 onlineAvailability（12min）。
+ * 取值已由用户拍板 45min（2026-09-26），后续如需调整改这一行即可。
+ */
+export const PARSER_AVAILABILITY_TTL_MS = 45 * 60 * 1000;
+
 export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
   {
     key: 'fanza',
@@ -285,6 +292,8 @@ export class OnlineAvailabilityManager {
           }), this.config.timeoutMs, `${site.name} availability check`);
           return parseOnlineAvailabilityDocument(site, doc, videoId, url, 200);
         },
+        // parser 型整页 + DOM 解析成本高，延长缓存窗口减少重复探测；get 型传 undefined 走表值（12min）
+        { ttlMs: site.fetchType === 'parser' ? PARSER_AVAILABILITY_TTL_MS : undefined },
       );
       if (fromCache) {
         // 跨页复用探测结果，避免重复外网请求
