@@ -85,6 +85,21 @@ describe('SettingsSectionNav', () => {
     expect(sectionNavCss).not.toContain('grid-template-columns: minmax(0, 1fr) minmax(148px, 180px);');
   });
 
+  it('reserves a right gutter for the floating panel on mid-size desktop viewports', () => {
+    // 1101~1659px 视口内，fixed 浮动面板与 1200px 居中内容列必然重叠，
+    // 必须给内容列让出「面板宽 + 贴边距离」的右缘空间，避免盖住内容右侧按钮。
+    const gutterRule = [
+      '@media (min-width: 1101px) and (max-width: 1659px) {',
+      '  .settings-section-nav-layout .settings-section-nav-content {',
+      '    width: auto;',
+      '    margin-right: calc(var(--settings-section-nav-width, 180px) + var(--settings-section-nav-floating-edge, 50px) + 24px);',
+      '  }',
+      '}',
+    ].join('\n');
+
+    expect(sectionNavCss).toContain(gutterRule);
+  });
+
   it('allows callers to control active state as null', () => {
     const html = renderToStaticMarkup(
       createElement(SettingsSectionNav, {

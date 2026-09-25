@@ -27,6 +27,19 @@
   transform: translateY(-50%);
 }
 
+/* 视口宽 [1101, 1659] 时，浮动面板（fixed，贴视口右缘）必然与 1200px 居中内容列
+   重叠，会盖住内容右侧的按钮（如 Cloud 页「编辑连接」）。此区间内内容列让出
+   面板所占的右缘空间，面板永远落进让出的沟槽，不再遮挡任何可点元素。
+   ≥1660px 时面板落在页面外缘留白里，无需让位；≤1100px 走吸顶 chips，也不重叠。
+   注意：基础规则里 width: 100% 会吃掉 margin-right，必须同时改 width: auto
+   才能真正确保右缘间距收缩内容列而不是整体外溢。 */
+@media (min-width: 1101px) and (max-width: 1659px) {
+  .settings-section-nav-layout .settings-section-nav-content {
+    width: auto;
+    margin-right: calc(var(--settings-section-nav-width, 180px) + var(--settings-section-nav-floating-edge, 50px) + 24px);
+  }
+}
+
 .settings-section-nav {
   color: var(--text-primary, var(--color-fg, #1f2328));
 }
