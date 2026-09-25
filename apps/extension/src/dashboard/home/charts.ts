@@ -9,7 +9,19 @@ import { createRefreshCoordinator } from './refreshCoordinator';
 import {
   loadHomeOverviewStages,
 } from './homeOverviewLoader';
-import { buildHomeStatusData } from './homeChartData';
+import {
+  buildHomeStatusData,
+  buildHomeTagsBarData,
+  buildHomeTagsBarOptions,
+  buildHomeStatusDonutOptions,
+  readHomeChartColors,
+  HOME_TAGS_BAR_PAGE_SIZE,
+} from './homeChartData';
+import {
+  paintHomeG2PlotChart,
+  recolorHomeChartsInPlace,
+  type HomeChartsRecolorContext,
+} from './homeChartRecolor';
 import { createHomeChartRenderQueue, scheduleDeferredRender, scheduleHomeChartRender, type HomeChartRenderTask, yieldToBrowser } from './homeRenderScheduler';
 import {
   createHomeChartLifecycle,
@@ -195,80 +207,15 @@ function getChartBody(shell: HTMLElement | null): HTMLElement | null {
   return shell?.querySelector('.chart-card-body') as HTMLElement | null;
 }
 
-export interface HomeTagsBarTheme {
-  text: string;
-  muted: string;
-  border: string;
-}
-
-export interface HomeTagsBarDatum {
-  name: string;
-  value: number;
-  color: string;
-}
-
-const HOME_TAGS_BAR_COLORS = ['#60a5fa','#34d399','#fbbf24','#f472b6','#a78bfa','#f59e0b','#ef4444','#06b6d4','#84cc16','#fb7185'];
-
-export function buildHomeTagsBarData(
-  tags: Array<{ name: string; count: number }>,
-  page: number,
-  pageSize: number,
-): HomeTagsBarDatum[] {
-  const start = Math.max(0, page) * Math.max(1, pageSize);
-  return (Array.isArray(tags) ? tags : [])
-    .slice(start, start + Math.max(1, pageSize))
-    .map((tag, index) => ({
-      name: String(tag.name || '').trim(),
-      value: Number(tag.count || 0),
-      color: HOME_TAGS_BAR_COLORS[index % HOME_TAGS_BAR_COLORS.length],
-    }))
-    .filter(tag => tag.name && Number.isFinite(tag.value));
-}
-
-export function buildHomeTagsBarOptions(data: HomeTagsBarDatum[], theme: HomeTagsBarTheme): any {
-  return {
-    data,
-    xField: 'value',
-    yField: 'name',
-    legend: false,
-    autoFit: false,
-    barStyle: { radius: [0, 6, 6, 0] },
-    label: {
-      position: 'right',
-      style: { fill: theme.text, fontWeight: 700 },
-    },
-    tooltip: { showTitle: false },
-    xAxis: {
-      min: 0,
-      nice: true,
-      label: { style: { fill: theme.muted } },
-      line: { style: { stroke: theme.border } },
-      tickLine: { style: { stroke: theme.border } },
-      grid: { line: { style: { stroke: theme.border, lineDash: [4, 4] } } },
-    },
-    yAxis: {
-      label: { autoHide: true, autoEllipsis: true, style: { fill: theme.muted } },
-      line: { style: { stroke: theme.border } },
-      tickLine: null,
-      grid: null,
-    },
-    color: (datum: HomeTagsBarDatum) => datum.color,
-  };
-}
-
-export function buildHomeStatusDonutOptions(theme: Pick<HomeTagsBarTheme, 'text' | 'muted'>): any {
-  return {
-    label: {
-      type: 'inner',
-      offset: '-50%',
-      formatter: (datum: any) => String(Number(datum?.value) || 0),
-      style: { fill: '#fff', fontWeight: 700 },
-    },
-    statistic: {
-      title: { content: '总数', style: { fill: theme.muted, fontSize: 12 } },
-    },
-  };
-}
+// cycle-13：标签 Top 数据/选项构建器与状态 donut 选项已搬入 homeChartData.ts
+// （主题切换 recolor 与首渲共用同一套构建器），此处 re-export 保持 API 兼容。
+export {
+  buildHomeTagsBarData,
+  buildHomeTagsBarOptions,
+  buildHomeStatusDonutOptions,
+  type HomeTagsBarTheme,
+  type HomeTagsBarDatum,
+} from './homeChartData';
 
 function renderChartEmptyState(el: HTMLElement, text: string): void {
   el.innerHTML = `<div class="chart-empty-state">${text}</div>`;
@@ -297,6 +244,7 @@ function updateG2Plot(
     try {
       current.changeData(data);
       rememberHomeChartSize(charts, key, el);
+      maybeRecolorAfterDrift();
       return current;
     } catch {}
   }
@@ -307,6 +255,7 @@ function updateG2Plot(
   charts[key] = plot;
   charts[`${key}Element`] = el;
   rememberHomeChartSize(charts, key, el);
+  maybeRecolorAfterDrift();
   return plot;
 }
 
@@ -366,6 +315,8 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
           '想看': colors.warning,
         } as Record<string, string>)[String(datum?.type)] || colors.primary,
       }, data);
+      // 首渲补色（幂等）：线色与图例 marker 首渲已正确，这里统一走 op 兜底漂移场景。
+      paintHomeG2PlotChart(charts, null, 'recordsTrend');
     }
 
     if (doActors && actorsTrendEl) {
@@ -402,6 +353,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
           '拉黑': colors.danger,
         } as Record<string, string>)[String(datum?.type)] || colors.primary,
       }, data);
+      paintHomeG2PlotChart(charts, null, 'actorsTrend');
     }
 
     if (doNewWorks && newWorksTrendEl) {
@@ -434,6 +386,7 @@ async function renderHomeTrendCharts(args: HomeTrendRenderArgs): Promise<void> {
           '已读': colors.success,
         } as Record<string, string>)[String(datum?.type)] || colors.primary,
       }, data);
+      paintHomeG2PlotChart(charts, null, 'newWorksTrend');
     }
   } catch {}
 }
@@ -445,6 +398,52 @@ let homeOverviewInitialized = false;
 let homeOverviewNeedsRender = false;
 let homeOverviewHasRendered = false;
 let homeNewWorksDailyStatRefreshed = false;
+// cycle-13：主题切换不再全量刷新。渲染 pass 结束时的数据快照，主题变化时
+// buildHome*RecolorPatches 据此生成「只改颜色」的 patch，直接打到已有实例。
+let lastHomeChartsRecolorContext: HomeChartsRecolorContext | null = null;
+// 渲染 pass 开始时的 data-theme 戳：pass 进行中若切了主题（闭包已取旧色），
+// 图表任务完成后轻量 recolor 兜底，避免个别图留在旧主题色。
+let homeChartsPassTheme: string | null = null;
+// home 后台期间主题切换过：tab:show 回来时轻量 recolor（不重拉数据）。
+let homeThemeChangedWhileInactive = false;
+
+function currentThemeStamp(): string {
+  try {
+    return document.documentElement.getAttribute('data-theme') || 'light';
+  } catch {
+    return 'light';
+  }
+}
+
+function themeDriftedSincePass(): boolean {
+  return homeChartsPassTheme !== null && currentThemeStamp() !== homeChartsPassTheme;
+}
+
+/** 渲染 pass（或其内部图表任务）发现主题已漂移 → 轻量 recolor 兜底（幂等、廉价）。 */
+function maybeRecolorAfterDrift(): void {
+  if (!themeDriftedSincePass()) return;
+  try {
+    recolorHomeCharts();
+  } catch {}
+}
+
+/**
+ * cycle-13：主题切换只改颜色，不拉数据、不重建图表。
+ * 守卫：home 在前台且存在上次渲染 pass 的数据快照，否则 no-op。
+ */
+export function recolorHomeCharts(): void {
+  if (!isHomeTabActive()) return;
+  const ctx = lastHomeChartsRecolorContext;
+  if (!ctx) return;
+  try {
+    const colors = readHomeChartColors();
+    const isDark = currentThemeStamp() === 'dark';
+    const HC = (window as any).__HOME_CHARTS__;
+    if (!HC) return;
+    const page = Number((HC.__tagsTopPager?.page ?? 0) || 0);
+    recolorHomeChartsInPlace(HC, ctx, colors, isDark, page);
+  } catch {}
+}
 
 const homeChartLifecycle = createHomeChartLifecycle();
 
@@ -464,6 +463,7 @@ function isHomeChartSessionActive(session: HomeChartSession): boolean {
 export function disposeHomeCharts(options: { preserveOverviewRender?: boolean } = {}): void {
   homeChartLifecycle.dispose();
   if (options.preserveOverviewRender !== true) homeOverviewNeedsRender = false;
+  if (options.preserveOverviewRender !== true) lastHomeChartsRecolorContext = null;
   homeOverviewHasRendered = false;
   const charts = (window as any).__HOME_CHARTS__ as Record<string, unknown> | undefined;
   if (!charts) return;
@@ -587,6 +587,11 @@ function bindHomeChartsPageLifecycle(): void {
       if (detail?.tabId !== 'tab-home') return;
       // 隐藏→重显后容器尺寸可能已变（窗口 resize），补一次去抖尺寸同步；尺寸未变则不会重绘。
       scheduleHomeChartSizeSync(60);
+      // cycle-13：home 隐藏期间切过主题 → 回前台轻量 recolor（不重拉数据）。
+      if (homeThemeChangedWhileInactive) {
+        homeThemeChangedWhileInactive = false;
+        try { recolorHomeCharts(); } catch {}
+      }
     });
   } catch {}
 }
@@ -596,11 +601,13 @@ function bindHomeChartsThemeListener(): void {
   homeChartsThemeListenerBound = true;
   try {
     const onThemeChange = () => {
+      // cycle-13：主题切换不再触发全量刷新（加载遮罩 + 重拉 DB）。
+      // 前台 → 轻量 recolor；后台 → 只置位，tab:show 回来时轻量 recolor。
       if (!isHomeTabActive()) {
-        homeOverviewNeedsRender = true;
+        homeThemeChangedWhileInactive = true;
         return;
       }
-      try { initOrUpdateHomeCharts(); } catch {}
+      try { recolorHomeCharts(); } catch {}
     };
     themeManager.onThemeChange(onThemeChange);
   } catch {}
@@ -678,24 +685,8 @@ async function renderHomeChartsWithEcharts(
     };
     // 图表尺寸同步统一走 bindHomeChartsSizeSync（window resize 去抖 + tab:show 补偿，
     // 兼容 G2Plot changeSize 与 echarts resize），此处不再单独绑定。
-    const getVar = (name: string, fallback: string) => {
-      try {
-        const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-        return v || fallback;
-      } catch { return fallback; }
-    };
-    const COLORS: any = {
-      primary: getVar('--primary', '#3b82f6'),
-      success: getVar('--success', '#22c55e'),
-      info: getVar('--info', '#14b8a6'),
-      warning: getVar('--warning', '#f59e0b'),
-      danger: getVar('--danger', '#ef4444'),
-      text: getVar('--text', '#111827'),
-      muted: getVar('--muted', '#6b7280'),
-      border: getVar('--border', '#e5e7eb'),
-      surface: getVar('--surface', '#ffffff'),
-      pieBorder: getVar('--bg-primary', '#f5f7fb')
-    };
+    // cycle-13：颜色统一走 readHomeChartColors()（与 recolor 共用唯一颜色来源）
+    const COLORS: any = readHomeChartColors();
     const fmtDate = (d: Date) => {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -703,6 +694,8 @@ async function renderHomeChartsWithEcharts(
       return `${y}-${m}-${day}`;
     };
     let s: any = null, w: any = null, insRange: any = null, insAll: any = null, viewsArrRange: any[] = [];
+    // cycle-13：提升给 recolor 上下文用（ECharts 路径标签 Top 数据源）
+    let tagsFull: Array<{ name: string; count: number }> = [];
     const parse = (s: string) => { try { const [Y,M,D] = String(s||'').split('-').map((n) => Number(n)); return new Date(Y, (M||1)-1, D||1); } catch { return new Date(); } };
     const msDay = 24*60*60*1000;
     try {
@@ -806,12 +799,13 @@ async function renderHomeChartsWithEcharts(
       if (tagsEl) {
         if (!canRender()) return;
         const full = await getTagsTopFromRecords(50);
+        tagsFull = full;
         if (!canRender()) return;
         const pager = document.getElementById('homeTagsPager') as HTMLDivElement | null;
         const prevBtn = document.getElementById('homeTagsPrevBtn') as HTMLButtonElement | null;
         const nextBtn = document.getElementById('homeTagsNextBtn') as HTMLButtonElement | null;
         const pageText = document.getElementById('homeTagsPageText') as HTMLSpanElement | null;
-        const pageSize = 10;
+        const pageSize = HOME_TAGS_BAR_PAGE_SIZE;
         const totalPages = Math.max(1, Math.ceil(full.length / pageSize));
         const color = (idx: number) => ['#60a5fa','#34d399','#fbbf24','#f472b6','#a78bfa','#f59e0b','#ef4444','#06b6d4','#84cc16','#fb7185'][idx % 10];
         let chart: any = null;
@@ -832,6 +826,7 @@ async function renderHomeChartsWithEcharts(
               };
               try { chart.setOption(option as any, true); } catch { chart.setOption(option as any); }
               this.updatePager();
+              maybeRecolorAfterDrift();
           },
           updatePager() {
             try { if (pageText) pageText.textContent = `${this.page + 1}/${totalPages}`; } catch {}
@@ -916,6 +911,20 @@ async function renderHomeChartsWithEcharts(
         }
       }
     } catch {}
+
+    // cycle-13：ECharts 路径数据快照（趋势图不渲染，三趋势为空数组）。
+    lastHomeChartsRecolorContext = {
+      renderer: 'echarts',
+      s,
+      w,
+      ins: insRange,
+      tagsTop: tagsFull,
+      records: [],
+      actors: [],
+      newWorks: [],
+    };
+    maybeRecolorAfterDrift();
+
   } catch {}
 }
 
@@ -971,6 +980,7 @@ async function renderHomeCharts(): Promise<void> {
   try {
     if (!isHomeTabActive()) return;
     const session = homeChartLifecycle.begin();
+    homeChartsPassTheme = currentThemeStamp();
     const plan = getHomeChartRenderPlan(readHomeChartDiagnosticConfig());
     if (!Object.values(plan.enabled).some(Boolean)) {
       if (isHomeChartSessionActive(session)) homeOverviewHasRendered = true;
@@ -1052,24 +1062,8 @@ async function renderHomeCharts(): Promise<void> {
     // 队列每 pass 新建，死亡 session 的任务体由 session 校验自然失效，无需跨 pass cancel。
     const firstRenderQueue = createHomeChartRenderQueue({ timeoutMs: 2500, gapFrames: 2 });
     HC.__firstRenderQueue = firstRenderQueue;
-    const getVar = (name: string, fallback: string) => {
-      try {
-        const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-        return v || fallback;
-      } catch { return fallback; }
-    };
-    const COLORS = {
-      primary: getVar('--primary', '#3b82f6'),
-      success: getVar('--success', '#22c55e'),
-      info: getVar('--info', '#14b8a6'),
-      warning: getVar('--warning', '#f59e0b'),
-      danger: getVar('--danger', '#ef4444'),
-      text: getVar('--text', '#111827'),
-      muted: getVar('--muted', '#6b7280'),
-      border: getVar('--border', '#e5e7eb'),
-      surface: getVar('--surface', '#ffffff'),
-      pieBorder: getVar('--bg-primary', '#f5f7fb')
-    } as any;
+    // cycle-13：颜色统一走 readHomeChartColors()（与 recolor 共用唯一颜色来源）
+    const COLORS = readHomeChartColors();
     const r = getHomeChartsRange();
     let s: any = null, w: any = null, ins: any = null, homeTagsTop: Array<{ name: string; count: number }> = [];
     let homeTrendRecords: any[] = [], homeTrendActors: any[] = [], homeTrendNewWorks: any[] = [];
@@ -1116,6 +1110,20 @@ async function renderHomeCharts(): Promise<void> {
       try { console.info('[INSIGHTS] home g2plot summary ready', { tagsTop: homeTagsTop.length }); } catch {}
     } catch {}
 
+    // cycle-13：数据快照就绪（s/w/ins/趋势/tagsTop）→ 写 recolor 上下文。
+    // 此后主题切换只走轻量 recolor，不再全量刷新。
+    lastHomeChartsRecolorContext = {
+      renderer: 'g2plot',
+      s,
+      w,
+      ins,
+      tagsTop: homeTagsTop,
+      records: homeTrendRecords,
+      actors: homeTrendActors,
+      newWorks: homeTrendNewWorks,
+    };
+    maybeRecolorAfterDrift();
+
     // cycle-9 A2：状态 donut 进首渲串行队列（保留 L-4 视口滚入门控；
     // 主流程不再内联等待渲染，summary 就绪后任务体直接取闭包数据）
     try {
@@ -1145,6 +1153,8 @@ async function renderHomeCharts(): Promise<void> {
             tooltip: { showTitle: false },
             color: data.map((datum) => datum.color),
           }, data);
+          // 首渲补色：statistic 为 HTML 节点且首渲颜色不跟主题，统一走就地改色 op 修正（幂等）。
+          paintHomeG2PlotChart(HC, lastHomeChartsRecolorContext, 'statusDonut');
         });
       }
     } catch {}
@@ -1178,7 +1188,7 @@ async function renderHomeCharts(): Promise<void> {
         await yieldToBrowser();
         if (!isHomeChartSessionActive(session)) return;
         const full = homeTagsTop;
-        const pageSize = 10;
+        const pageSize = HOME_TAGS_BAR_PAGE_SIZE;
         const totalPages = Math.max(1, Math.ceil(full.length / pageSize));
         const pageText = document.getElementById('homeTagsPageText') as HTMLSpanElement | null;
         const pager = document.getElementById('homeTagsPager') as HTMLDivElement | null;
@@ -1198,11 +1208,14 @@ async function renderHomeCharts(): Promise<void> {
                 hideLoading(tagsEl);
                 renderChartEmptyState(tagsEl, '暂无标签数据');
                 this.updatePager();
+                maybeRecolorAfterDrift();
                 return;
               }
               clearChartEmptyState(tagsEl);
               if (HC['tagsTop'] && typeof HC['tagsTop'].changeData === 'function') {
                 HC['tagsTop'].changeData(list);
+                // changeData 内部是 clear+重渲，Bar 的 color 通道失效会刷回默认蓝，立即补涂调色板。
+                paintHomeG2PlotChart(HC, lastHomeChartsRecolorContext, 'tagsTop');
               } else {
                 if (HC['tagsTop']?.destroy) { try { HC['tagsTop'].destroy(); } catch {} }
                 
@@ -1217,6 +1230,8 @@ async function renderHomeCharts(): Promise<void> {
                 HC['tagsTop'] = plot;
                 HC['tagsTopElement'] = tagsEl;
                 rememberHomeChartSize(HC, 'tagsTop', tagsEl);
+                // 首渲补涂：Bar 的 color 回调在 vendored bundle 里失效，这里补上固定调色板。
+                paintHomeG2PlotChart(HC, lastHomeChartsRecolorContext, 'tagsTop');
               }
             } catch {
               try { if (HC['tagsTop']?.destroy) { HC['tagsTop'].destroy(); } } catch {}
@@ -1232,8 +1247,10 @@ async function renderHomeCharts(): Promise<void> {
               HC['tagsTop'] = plot;
               HC['tagsTopElement'] = tagsEl;
               rememberHomeChartSize(HC, 'tagsTop', tagsEl);
+              paintHomeG2PlotChart(HC, lastHomeChartsRecolorContext, 'tagsTop');
             }
             this.updatePager();
+            maybeRecolorAfterDrift();
           },
           updatePager() {
             try { if (pageText) pageText.textContent = `${this.page + 1}/${totalPages}`; } catch {}
@@ -1364,6 +1381,7 @@ export async function refreshHomeOverview(options: { force?: boolean } = {}): Pr
 
 export function invalidateHomeOverview(): void {
   invalidateHomeStatsSnapshot();
+  lastHomeChartsRecolorContext = null;
   homeOverviewInitialized = false;
   homeOverviewNeedsRender = false;
   homeOverviewHasRendered = false;
