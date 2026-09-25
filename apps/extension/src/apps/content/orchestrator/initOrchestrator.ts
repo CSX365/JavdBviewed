@@ -189,6 +189,13 @@ class InitOrchestrator {
     // 当页面隐藏时，记录 lease 持有任务
     const onVisibilityChange = () => {
       if (document.hidden) {
+        // S1-14 A2: 转 hidden 时取消未触发的 1s flush 定时器，指标留内存标脏，
+        // 回前台统一 flush（保证 hidden 期间 saveMetrics 0 落盘）
+        this.metricsSaveDirty = true;
+        if (this.metricsSaveTimeout !== undefined) {
+          window.clearTimeout(this.metricsSaveTimeout);
+          this.metricsSaveTimeout = undefined;
+        }
         const now = Date.now();
         for (const [_phase, tasks] of Object.entries(this.phases)) {
           for (const st of tasks) {
@@ -199,6 +206,9 @@ class InitOrchestrator {
         }
         return;
       }
+
+      // S1-14 A2: 回前台先 flush hidden 期间累积的指标
+      this.flushMetricsSave();
 
       for (const [phase, tasks] of Object.entries(this.phases) as Array<[InitPhase, ManagedScheduledTask[]]>) {
         for (const st of tasks) {
@@ -445,6 +455,7 @@ class InitOrchestrator {
       clearTimeout(this.metricsSaveTimeout);
       this.metricsSaveTimeout = undefined;
     }
+    this.metricsSaveDirty = false;
   }
 
   /**
@@ -534,15 +545,44 @@ class InitOrchestrator {
    */
   private scheduleMetricsSave(): void {
     // 防抖：避免频繁写入数据库
-    if (this.metricsSaveTimeout) {
-      clearTimeout(this.metricsSaveTimeout);
+    if (this.metricsSaveTimeout !== undefined) {
+      window.clearTimeout(this.metricsSaveTimeout);
+      this.metricsSaveTimeout = undefined;
     }
+    // S1-14 A2: hidden 页不启动 1s flush 定时器 —— S0 实测每个 hidden tab 约每秒
+    // 一条 'orchestrator:saveMetrics' SW 消息（稳态 SW console 每 ~6s 一条全浏览器）。
+    // hidden 时指标继续内存累积（recordTask），回前台由 visibilitychange 统一 flush；
+    // 关页由既有 pageLifecycleBindings beforeunload 尽力发送（诊断数据，丢窗口可接受）。
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      this.metricsSaveDirty = true;
+      return;
+    }
+    this.metricsSaveDirty = true;
     this.metricsSaveTimeout = window.setTimeout(() => {
+      this.metricsSaveTimeout = undefined;
+      this.metricsSaveDirty = false;
       this.saveMetricsToDatabase();
     }, 1000); // 1秒后保存
   }
 
+  /**
+   * S1-14 A2: flush 未落盘指标（visibilitychange 回前台时调用）。
+   * flush 时机契约：① 前台 1s 防抖定时器（行为不变）；② 回前台 flush dirty；
+   * ③ 关页 beforeunload 尽力发送（pageLifecycleBindings 既有逻辑）。
+   */
+  private flushMetricsSave(): void {
+    if (this.metricsSaveTimeout !== undefined) {
+      window.clearTimeout(this.metricsSaveTimeout);
+      this.metricsSaveTimeout = undefined;
+    }
+    if (!this.metricsSaveDirty) return;
+    this.metricsSaveDirty = false;
+    this.saveMetricsToDatabase();
+  }
+
   private metricsSaveTimeout?: number;
+  /** S1-14 A2: 有未落盘指标（hidden 期间累积或前台防抖窗内） */
+  private metricsSaveDirty = false;
 
   /** 页面卸载时释放编排器的常驻监控和延迟重试资源。 */
   dispose(): void {
@@ -568,6 +608,7 @@ class InitOrchestrator {
       window.clearTimeout(this.metricsSaveTimeout);
       this.metricsSaveTimeout = undefined;
     }
+    this.metricsSaveDirty = false;
   }
 
   async add(phase: InitPhase, task: InitTask, options: InitTaskOptions = {}): Promise<void> {
