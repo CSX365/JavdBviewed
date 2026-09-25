@@ -518,6 +518,30 @@ export async function siteFetchText(
   return null;
 }
 
+/**
+ * 计算 Chromium 启动参数中的代理相关部分（纯函数，便于单测断言）。
+ *
+ * 回归（cycle-13 S2）：Chromium 149 实测 --proxy-bypass-list=<-loopback> 不生效，
+ * 127.0.0.1 请求仍进代理（sing-box 上游不可达返回空 502），cloud self-host E2E 全链路挂掉；
+ * 必须写显式回环列表才能直连。探针 scripts/_tmpProxyBypassProbe.mjs（勿提交）。
+ *
+ * 语义：
+ * - proxy 为空（含纯空白）：原样返回 extraArgs，不做任何修改。
+ * - proxy 非空：剔除调用方传入的 --no-proxy-server（与 --proxy-server 互斥，防止参数打架），
+ *   追加 --proxy-server=<proxy> 与显式回环绕过列表 --proxy-bypass-list=127.0.0.1;localhost;[::1]。
+ */
+export function resolveProxyLaunchArgs(proxy: string, extraArgs: readonly string[]): string[] {
+  const proxyServer = (proxy ?? '').trim();
+  if (!proxyServer) {
+    return [...extraArgs];
+  }
+  return [
+    ...extraArgs.filter((arg) => arg !== '--no-proxy-server'),
+    `--proxy-server=${proxyServer}`,
+    '--proxy-bypass-list=127.0.0.1;localhost;[::1]',
+  ];
+}
+
 export async function launchExtensionContext(
   harnessOptions: ExtensionHarnessOptions,
   launchOptions: LaunchExtensionContextOptions = {},
@@ -525,14 +549,10 @@ export async function launchExtensionContext(
   await assertExtensionBuildDirectory(harnessOptions.extensionDir);
   const args = createChromiumExtensionArgs(harnessOptions.extensionDir);
   const replayDir = resolveE2eReplayDir();
-  const extraArgs = [...(launchOptions.extraArgs ?? [])];
   // 回放模式：源站走代理兜底（直连 CDN 路由断）；显式设置 JAVDB_E2E_PROXY 时（含非回放模式）同样走代理
   //（测试机直连源站不可达场景）。本地回环地址直连（cloud 自托管/本地 mock 不经代理）。
   const proxy = (process.env.JAVDB_E2E_PROXY ?? (replayDir ? 'http://127.0.0.1:10808' : '')).trim();
-  if (proxy) {
-    extraArgs.filter((arg) => arg !== '--no-proxy-server');
-    extraArgs.push(`--proxy-server=${proxy}`, '--proxy-bypass-list=<-loopback>');
-  }
+  const extraArgs = resolveProxyLaunchArgs(proxy, launchOptions.extraArgs ?? []);
   if (extraArgs.length) {
     args.push(...extraArgs);
   }

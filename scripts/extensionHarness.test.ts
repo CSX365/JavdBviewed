@@ -15,6 +15,7 @@ import {
   prepareChromeTestProfile,
   readChromeSnapshotMetadata,
   resolveExtensionHarnessOptions,
+  resolveProxyLaunchArgs,
   retryTransientFileSystemOperation,
   shouldKeepChromeExtensionStateDirectory,
   shouldCopyChromeProfilePath,
@@ -382,5 +383,37 @@ describe('extensionHarness', () => {
       metadataPath,
       refreshDays: 10,
     })).rejects.toThrow('复制记录已损坏');
+  });
+});
+describe('resolveProxyLaunchArgs', () => {
+  test('无代理时原样返回 extraArgs（含纯空白 proxy）', () => {
+    expect(resolveProxyLaunchArgs('', ['--window-size=1280,800'])).toEqual(['--window-size=1280,800']);
+    expect(resolveProxyLaunchArgs('   ', [])).toEqual([]);
+    expect(resolveProxyLaunchArgs(undefined as unknown as string, ['--foo'])).toEqual(['--foo']);
+  });
+
+  test('有代理时追加 --proxy-server 与显式回环绕过列表', () => {
+    const args = resolveProxyLaunchArgs('http://127.0.0.1:10810', []);
+    expect(args).toContain('--proxy-server=http://127.0.0.1:10810');
+    // 回归（cycle-13 S2）：必须显式回环列表，<-loopback> 在 Chromium 149 下不生效
+    expect(args).toContain('--proxy-bypass-list=127.0.0.1;localhost;[::1]');
+    expect(args).not.toContain('--proxy-bypass-list=<-loopback>');
+  });
+
+  test('有代理时剔除调用方传入的 --no-proxy-server，其余参数保留', () => {
+    const args = resolveProxyLaunchArgs('http://127.0.0.1:10810', [
+      '--no-proxy-server',
+      '--window-size=1280,800',
+    ]);
+    expect(args).not.toContain('--no-proxy-server');
+    expect(args).toContain('--window-size=1280,800');
+    expect(args).toContain('--proxy-server=http://127.0.0.1:10810');
+    expect(args).toHaveLength(3);
+  });
+
+  test('不修改调用方传入的 extraArgs 原数组', () => {
+    const input: string[] = ['--no-proxy-server'];
+    resolveProxyLaunchArgs('http://127.0.0.1:10810', input);
+    expect(input).toEqual(['--no-proxy-server']);
   });
 });
