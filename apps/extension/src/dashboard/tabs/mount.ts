@@ -149,6 +149,10 @@ export async function mountTabIfNeeded(tabId: string): Promise<void> {
         if (subCfg) {
           const html = await loadPartial(subCfg.name);
           if (html) {
+            // 子页挂载竞态收敛：等前页卸载 flush 的延迟写盘 settle，
+            // 避免新页 init 读到旧值基线（nonperf1-race-forensics 方案 A）
+            const { awaitPendingSettingsPersist } = await import('../../apps/dashboard/pages/settings/shared/settingsPersist');
+            await awaitPendingSettingsPersist();
             const { resolveSettingsSubpageMeta } = await import('../../apps/dashboard/pages/settings/settingsNavModel');
             const { mountSettingsSubpageShell } = await import('../../apps/dashboard/pages/settings/mountSettingsSubpageShell');
             const meta = resolveSettingsSubpageMeta(subSection);
