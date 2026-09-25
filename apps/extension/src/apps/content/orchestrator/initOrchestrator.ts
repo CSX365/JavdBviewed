@@ -172,8 +172,12 @@ class InitOrchestrator {
           const [phase, label] = taskKey.split('|', 2);
           const st = (this.phases[phase as InitPhase] || []).find(s => (s.options.label || '') === label);
           if (st) {
-            this.log('stall: forcing lease retry', { phase, label, waitMs: now - registeredAt });
-            this.runTask(phase as InitPhase, st).catch(() => {});
+            // S1-14 A1: 退避定时器持有该任务时不得强制抢跑（会击穿指数退避、
+            // 重演弹跳风暴）；其重跑由退避定时器 / 回前台 / SW prompt 驱动
+            if (!this.isTaskInBackoffOwnership(phase as InitPhase, st)) {
+              this.log('stall: forcing lease retry', { phase, label, waitMs: now - registeredAt });
+              this.runTask(phase as InitPhase, st).catch(() => {});
+            }
           }
         }
       }
@@ -257,6 +261,18 @@ class InitOrchestrator {
 
   private clearDeferredRetry(phase: InitPhase, label: string): void {
     this.retryTimers.clear(phase, label);
+  }
+
+  /**
+   * S1-14 A1: 任务是否已移交后台退避定时器所有权（hidden 页容量型等待）。
+   * 不变量：pendingBackgroundLeaseRetries 有条目 ⟺ retryTimers 有对应存活定时器；
+   * 回前台后 pendingBackgroundLeaseRetries 清空，谓词恒 false（前台行为不受影响）。
+   */
+  private isTaskInBackoffOwnership(phase: InitPhase, st: ManagedScheduledTask): boolean {
+    const label = st.options.label;
+    if (!label) return false;
+    if (!this.pendingBackgroundLeaseRetries.has(createDeferredRetryKey(phase, label))) return false;
+    return typeof document !== 'undefined' && document.visibilityState !== 'visible';
   }
 
   private scheduleDeferredRetry(phase: InitPhase, st: ManagedScheduledTask, waitReason?: string): void {
@@ -654,6 +670,11 @@ class InitOrchestrator {
 
     const label = st.options.label || 'anonymous';
     this.clearDeferredRetry(phase, label);
+    // S1-14 A1: 接管执行 = 接管重试所有权 —— 清除待触发退避定时器的同时释放
+    // pendingBackgroundLeaseRetries 条目（两者必须同步释放）。所有取消定时器
+    // 的路径（此处 / 回前台 visibilitychange / SW prompt 唤醒 / 卸载）都成对
+    // 释放并立即重跑或随页面销毁，不留下「既无定时器又无 prompt」的死任务。
+    this.pendingBackgroundLeaseRetries.delete(createDeferredRetryKey(phase, label));
     st.queued = false;
     if (st.running) {
       return Promise.resolve();
@@ -1049,6 +1070,10 @@ class InitOrchestrator {
       maxConcurrentTasks: this.maxConcurrentHighTasks,
       runTask: (task) => this.runTask('high', task),
       log: (message, detail) => this.log(message, detail),
+      // S1-14 A1: hidden 页退避中的高任务由重试定时器/A3 prompt 持有，循环重入
+      // （每个非 high 任务完成都会触发）不得再发起租约请求 —— S0 实测弹跳间隔
+      // 370~687ms 的 request-lease 风暴主源。前台 tab 谓词恒真，行为逐帧不变。
+      isLoopEligible: (task) => !this.isTaskInBackoffOwnership('high', task),
     });
   }
 
