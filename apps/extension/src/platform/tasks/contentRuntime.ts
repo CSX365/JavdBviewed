@@ -22,6 +22,7 @@ export {
   isGlobalTaskLabelCompleted,
   isRetryBudgetExhausted,
   notifyGlobalTaskCompleted,
+  onLeasePrompt,
   pauseManagedTask,
   progressManagedTask,
   registerManagedTask,

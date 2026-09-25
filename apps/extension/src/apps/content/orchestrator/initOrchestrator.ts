@@ -15,6 +15,7 @@ import {
   isRetryBudgetExhausted,
   incrementTaskRetryCount,
   notifyGlobalTaskCompleted,
+  onLeasePrompt,
   recordContentPerformanceDuration,
   resolveTaskBucket,
   runManagedTask,
@@ -96,6 +97,8 @@ class InitOrchestrator {
   private readonly backgroundLeaseDenials = new Map<string, number>();
   // S1: 处于退避等待中的后台租约重试（切回前台立即重跑，不等退避定时器）
   private readonly pendingBackgroundLeaseRetries = new Map<string, { phase: InitPhase; st: ManagedScheduledTask }>();
+  /** S1-14 A3: onLeasePrompt 退订函数（dispose 时释放） */
+  private leasePromptUnsubscribe?: () => void;
   // S1: 后台 tab 重任务阶段错峰启动窗口
   private highPhaseArmed = true;
   private backgroundStaggerTimer?: number;
@@ -159,6 +162,8 @@ class InitOrchestrator {
     this.startStallDetection();
     // P0 FIX: 启动 hidden lease 泄漏保护
     this.startHiddenLeaseProtection();
+    // S1-14 A3: SW 槽位释放 prompt → 立即重请求最老 hidden 退避任务（指数退避保留为兜底）
+    this.leasePromptUnsubscribe = onLeasePrompt(() => this.handleLeasePrompt());
   }
 
   // ── P0 FIX: 任务老化检测 ────────────────────────────────────────────────
@@ -283,6 +288,30 @@ class InitOrchestrator {
     if (!label) return false;
     if (!this.pendingBackgroundLeaseRetries.has(createDeferredRetryKey(phase, label))) return false;
     return typeof document !== 'undefined' && document.visibilityState !== 'visible';
+  }
+
+  /**
+   * S1-14 A3: SW 槽位释放 prompt → 取消在飞退避定时器，立即重请求最老退避任务。
+   * - 仅处理 hidden 态（回前台后退避集已被 visibilitychange 清空；visible 防御性直接返回）；
+   * - backgroundLeaseDenials 保留：唤醒后再被拒绝，退避不降级（指数退避仍是 30s 兜底）；
+   * - 任务已被其他路径接管（completed/running）时只释放定时器+记录，不留死任务；
+   * - 每 prompt 只唤醒最老一条（Map 插入序），其余继续按各自退避定时器排程。
+   */
+  private handleLeasePrompt(): void {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') return;
+    const first = this.pendingBackgroundLeaseRetries.entries().next();
+    if (first.done) return;
+    const [key, pending] = first.value;
+    const [ph, label] = key.split('::', 2);
+    if (!pending || pending.st.completed || pending.st.running) {
+      this.retryTimers.clear(ph as InitPhase, label);
+      this.pendingBackgroundLeaseRetries.delete(key);
+      return;
+    }
+    this.retryTimers.clear(ph as InitPhase, label);
+    this.pendingBackgroundLeaseRetries.delete(key);
+    this.log('lease prompt woke background backoff task', { phase: ph, label });
+    this.runTask(ph as InitPhase, pending.st).catch(() => {});
   }
 
   private scheduleDeferredRetry(phase: InitPhase, st: ManagedScheduledTask, waitReason?: string): void {
@@ -600,6 +629,8 @@ class InitOrchestrator {
       window.clearTimeout(this.backgroundStaggerTimer);
       this.backgroundStaggerTimer = undefined;
     }
+    this.leasePromptUnsubscribe?.();
+    this.leasePromptUnsubscribe = undefined;
     this.retryTimers.clearAll();
     this.foregroundDeferredTaskKeys.clear();
     this.backgroundLeaseDenials.clear();

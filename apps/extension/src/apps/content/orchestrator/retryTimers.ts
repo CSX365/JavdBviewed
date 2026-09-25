@@ -36,8 +36,11 @@ export class OrchestratorRetryTimers {
   clear(phase: InitPhase, label: string): void {
     const key = createDeferredRetryKey(phase, label);
     const timerId = this.timers.get(key);
-    if (typeof timerId === 'number') {
-      this.timerHost.clearTimeout(timerId);
+    // 注意：浏览器环境 timerId 为 number，但 vitest jsdom + fake timers 下
+    // window.setTimeout 返回对象 id（sinon）—— 若按 number 严格判断，clear 会静默 no-op，
+    // 导致「已取消」的退避定时器在测试中照旧触发（S1-14 A3 单测实测踩坑）
+    if (timerId !== undefined && timerId !== null) {
+      this.timerHost.clearTimeout(timerId as unknown as number);
       this.timers.delete(key);
     }
   }

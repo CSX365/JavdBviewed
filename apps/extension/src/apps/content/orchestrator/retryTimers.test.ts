@@ -74,4 +74,37 @@ describe('OrchestratorRetryTimers', () => {
     expect(timers.has('high', 'status:init')).toBe(false);
     expect(timers.has('idle', 'preview:init')).toBe(false);
   });
+  it('退避定时器 fire 后按原路径重跑一次，且键位释放可安排下一轮退避', () => {
+    const timerHost = createTimerHost();
+    const timers = new OrchestratorRetryTimers(timerHost.host);
+    const runViaOriginalPath = vi.fn();
+
+    expect(timers.schedule('high', 'enhancement:core', 1200, runViaOriginalPath)).toBe(true);
+
+    // 退避定时器到期 → 任务按原路径（runTask 闭包）重跑
+    timerHost.fire(1);
+    expect(runViaOriginalPath).toHaveBeenCalledTimes(1);
+    expect(timers.has('high', 'enhancement:core')).toBe(false);
+
+    // 再次被拒后可安排下一轮更长退避（键位未被锁死）
+    const secondRound = vi.fn();
+    expect(timers.schedule('high', 'enhancement:core', 2400, secondRound)).toBe(true);
+    timerHost.fire(2);
+    expect(secondRound).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancel（clear）后定时器不再触发，不留下既无定时器又无 prompt 的死任务', () => {
+    const timerHost = createTimerHost();
+    const timers = new OrchestratorRetryTimers(timerHost.host);
+    const callback = vi.fn();
+
+    timers.schedule('high', 'status:init', 400, callback);
+    timers.clear('high', 'status:init');
+
+    // 被取消的 timerId 即使被手动触发也不会执行回调
+    timerHost.fire(1);
+    expect(callback).not.toHaveBeenCalled();
+    expect(timers.has('high', 'status:init')).toBe(false);
+  });
+
 });

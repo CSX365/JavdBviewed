@@ -156,6 +156,11 @@ export function isRetryBudgetExhausted(taskId: string): boolean {
 // S2-2 (cycle-7): 事件驱动的租约唤醒 —— background 在排队状态变化时推送 LEASE_PROMPT（task-center:lease-prompt），
 // 等待中的页面立即重试租约，替代纯定频轮询（兜底间隔已由 500ms 放宽到 2000ms）
 const leasePromptWaiters = new Set<() => void>();
+// S1-14 A3: 外层退避态观察者 —— 编排器收到 LEASE_PROMPT 后立即重请求最老的 hidden
+// 退避任务（取消在飞退避定时器）。与 waitForTaskLease 内层循环 waiter 的区别：
+// hidden 页容量型拒绝后已退出内层循环（S1-2/cycle-8），prompt 到不了内层 waiter，
+// 退避任务只能由本观察者在 SW 槽位真实释放时提前唤醒
+const leasePromptObservers = new Set<(reason?: string) => void>();
 let leasePromptListenerInstalled = false;
 
 function ensureLeasePromptListener(): void {
@@ -165,11 +170,31 @@ function ensureLeasePromptListener(): void {
     chrome.runtime.onMessage.addListener((message: unknown) => {
       if (message && (message as { type?: unknown }).type === TASK_CENTER_MESSAGE.LEASE_PROMPT) {
         for (const wake of Array.from(leasePromptWaiters)) wake();
+        const reason = (message as { payload?: { reason?: string } }).payload?.reason;
+        for (const observer of Array.from(leasePromptObservers)) {
+          try {
+            observer(reason);
+          } catch {
+            // 单个观察者异常不影响其他观察者与内层 waiter
+          }
+        }
       }
     });
   } catch {
     // 非扩展环境（单测等）：退回定频轮询兜底
   }
+}
+
+/**
+ * S1-14 A3: 订阅 SW 租约 prompt（返回退订函数）。
+ * 供编排器做 hidden 退避任务的事件驱动提前唤醒；指数退避定时器保留为 30s 兜底。
+ */
+export function onLeasePrompt(listener: (reason?: string) => void): () => void {
+  ensureLeasePromptListener();
+  leasePromptObservers.add(listener);
+  return () => {
+    leasePromptObservers.delete(listener);
+  };
 }
 
 const activeManagedTaskIds = new Set<string>();

@@ -730,6 +730,7 @@ export class GlobalTaskCenter {
   /**
    * S2-2 (cycle-7): 排队状态可能变化时唤醒等待中的页面。
    * - 仅对存在 queued 任务的 tab 发送；每 tab 在合并窗（500ms）内最多一次；
+   * - S1-14 A3: hidden tab 不再跳过（hidden 退避任务由 prompt 提前唤醒，指数退避为兜底）；
    * - 唤醒只是提示「尽快再试一次」，租约判定仍以页面侧 request-lease 为准（轮询为兜底）；
    * - 发送失败（tab 已关闭等）静默吞掉，不影响状态机。
    */
@@ -759,11 +760,13 @@ export class GlobalTaskCenter {
     const coalesceMs = opts?.bypassCoalesce ? this.leasePromptBypassCoalesceMs : this.leasePromptCoalesceMs;
     const now = Date.now();
     for (const tabId of targetTabs) {
-      // S1-2 (cycle-8): 跳过 hidden 页 —— 容量型拒绝后 hidden 页已退出内层等待循环（转外层指数退避，
-      // 回前台由页面 visibilitychange 立即重跑），向 hidden 页发 prompt 纯浪费
-      // （S0-8 实测 16 页场景 15 页 hidden 全量接收广播）；未上报可见性的 tab 按 hidden 处理，
-      // 页面侧 2s 兜底轮询保证正确性。
-      if (!this.store.isTabVisible(tabId)) continue;
+      // S1-14 A3（推翻 S1-2/cycle-8 的 hidden skip）：hidden tab 也接收 prompt。
+      // 页面侧退避集（pendingBackgroundLeaseRetries）里的任务全部是后台可租约策略
+      // （foreground_first/foreground_only 在 hidden 走 foregroundDeferred 等待，不进退避），
+      // 即 hidden 下也能真正拿到租约 —— 槽位真实释放时 prompt 唤醒可省掉退避链
+      // （1.2s×2^n 封顶 30s，S0 实测 90~130s 退避长尾）白等。
+      // 防风暴三保险：① 每 tab 500ms 合并窗仍限频；② 页面侧仅唤醒最老一条退避任务；
+      // ③ 指数退避保留为 30s 兜底，prompt 唤醒再被拒绝时 denials 不重置（退避不降级）。
       const last = this.leasePromptLastSentAt.get(tabId);
       if (last !== undefined && now - last < coalesceMs) continue;
       if (last !== undefined && now - last > GlobalTaskCenter.leasePromptStaleMs) {
