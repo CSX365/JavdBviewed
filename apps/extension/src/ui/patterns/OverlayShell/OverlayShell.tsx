@@ -5,6 +5,7 @@
  */
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import './OverlayShell.css';
 
@@ -95,7 +96,16 @@ export function OverlayShell({
   const isMinimized = windowState === 'minimized';
   const isMaximized = windowState === 'maximized';
 
-  return (
+  /*
+   * portal 到 document.body：
+   * 祖先 .tab-content 有 contain: layout（cycle-9 A1 性能隔离），会把本壳的
+   * position:fixed 包含块从视口改为 tab 盒（随文档滚动、高=页内容），导致
+   * 深滚动时遮罩按页居中、关闭入口（详情 ✕ / 播放器 FAB）出视口、
+   * backdrop 只盖 tab 盒（长页底部不覆盖）。portal 后 fixed 恢复视口参照，
+   * 同时使 shell 脱离 .media-library-page（media.css contain: layout style）
+   * 等一切 contain 祖先，两处同类隐患一并出清。
+   */
+  return createPortal(
     <div
       className={cn(
         'ui-overlay-shell',
@@ -207,6 +217,7 @@ export function OverlayShell({
         <div className="ui-overlay-shell__body">{children}</div>
         {footer ? <footer className="ui-overlay-shell__footer">{footer}</footer> : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

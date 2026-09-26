@@ -10,6 +10,7 @@
 import type { EmbyMediaServer } from '../types';
 import { buildEmbyAuthHeaders, hasEmbyUserSession } from './embyUserAuth';
 import { normalizeServerUrl } from './libraryIndex';
+import { EMBY_LIBRARY_REQUEST_TIMEOUT_MS } from './fetchWithTimeout';
 
 export type EmbyProgressReportResult = {
   success: boolean;
@@ -53,6 +54,8 @@ export async function reportEmbyPlaybackProgress(params: {
   mediaSourceId?: string;
   playSessionId?: string;
   fetchImpl?: typeof fetch;
+  /** 整次进度写回（UserData + 会话 Start/Progress/Stop）共享的超时预算 */
+  timeoutMs?: number;
 }): Promise<EmbyProgressReportResult> {
   const base = normalizeServerUrl(params.server.url);
   const itemId = String(params.itemId || '').trim();
@@ -70,101 +73,114 @@ export async function reportEmbyPlaybackProgress(params: {
     return { success: false, message: '进度为 0，跳过写回', method: 'none', positionTicks: 0 };
   }
 
-  let udOk = false;
-  let progOk = false;
-  let lastError = '';
+  // 单一超时预算：服务器黑洞时各写回请求快速失败（fire-and-forget，UI 无感，
+  // 但消除旧行为下每条上报挂到 TCP 层的 promise 泄漏）
+  const timeoutMs = params.timeoutMs ?? EMBY_LIBRARY_REQUEST_TIMEOUT_MS;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const signal = controller?.signal;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  const timedFetch: typeof fetchImpl = (url, init) =>
+    fetchImpl(url, { ...init, ...(signal ? { signal } : {}) });
 
-  // 1) UserData：续看进度的权威写入
-  if (positionTicks > 0 || params.isCompleted) {
-    const ud = await postUserDataProgress({
-      base,
-      server: params.server,
-      itemId,
-      positionTicks,
-      isCompleted: params.isCompleted,
-      fetchImpl,
-      useApiKeyQuery: !(hasEmbyUserSession(params.server) && params.server.userId && params.server.accessToken),
-    });
-    if (ud.success) {
-      udOk = true;
-    } else {
-      lastError = ud.message || 'UserData 写回失败';
-    }
-  }
+  try {
+    let udOk = false;
+    let progOk = false;
+    let lastError = '';
 
-  // 2) 会话态：播放中写 Progress；关闭时 Stop，避免后台「仍在播放」
-  if (hasEmbyUserSession(params.server) && params.server.userId && params.server.accessToken) {
-    try {
-      if (isStopped) {
-        progOk = await stopPlayingItemSession({
-          base,
-          server: params.server,
-          itemId,
-          positionTicks,
-          mediaSourceId: params.mediaSourceId,
-          playSessionId: params.playSessionId,
-          fetchImpl,
-        });
+    // 1) UserData：续看进度的权威写入
+    if (positionTicks > 0 || params.isCompleted) {
+      const ud = await postUserDataProgress({
+        base,
+        server: params.server,
+        itemId,
+        positionTicks,
+        isCompleted: params.isCompleted,
+        fetchImpl: timedFetch,
+        useApiKeyQuery: !(hasEmbyUserSession(params.server) && params.server.userId && params.server.accessToken),
+      });
+      if (ud.success) {
+        udOk = true;
       } else {
-        // 部分服务器要求先 Start（刷新 Now Playing 会话）
-        const startUrl = `${base}/Users/${encodeURIComponent(params.server.userId)}/PlayingItems/${encodeURIComponent(itemId)}`;
-        const startQ = new URLSearchParams();
-        if (params.mediaSourceId) startQ.set('MediaSourceId', params.mediaSourceId);
-        if (params.playSessionId) startQ.set('PlaySessionId', params.playSessionId);
-        await fetchImpl(`${startUrl}?${startQ.toString()}`, {
-          method: 'POST',
-          headers: {
-            ...buildEmbyAuthHeaders(params.server),
-            'Content-Type': 'application/json',
-          },
-          body: '{}',
-        }).catch(() => undefined);
-
-        const q = new URLSearchParams();
-        q.set('PositionTicks', String(positionTicks));
-        if (params.mediaSourceId) q.set('MediaSourceId', params.mediaSourceId);
-        if (params.playSessionId) q.set('PlaySessionId', params.playSessionId);
-
-        const url = `${base}/Users/${encodeURIComponent(params.server.userId)}/PlayingItems/${encodeURIComponent(itemId)}/Progress?${q.toString()}`;
-        const res = await fetchImpl(url, {
-          method: 'POST',
-          headers: {
-            ...buildEmbyAuthHeaders(params.server),
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            PositionTicks: positionTicks,
-            IsPaused: false,
-            PlayedToCompletion: false,
-            MediaSourceId: params.mediaSourceId,
-            PlaySessionId: params.playSessionId,
-          }),
-        });
-        if (res.ok || res.status === 204) {
-          progOk = true;
-        }
+        lastError = ud.message || 'UserData 写回失败';
       }
-    } catch {
-      /* ignore session progress errors */
     }
-  }
 
-  if (udOk || progOk) {
+    // 2) 会话态：播放中写 Progress；关闭时 Stop，避免后台「仍在播放」
+    if (hasEmbyUserSession(params.server) && params.server.userId && params.server.accessToken) {
+      try {
+        if (isStopped) {
+          progOk = await stopPlayingItemSession({
+            base,
+            server: params.server,
+            itemId,
+            positionTicks,
+            mediaSourceId: params.mediaSourceId,
+            playSessionId: params.playSessionId,
+            fetchImpl: timedFetch,
+          });
+        } else {
+          // 部分服务器要求先 Start（刷新 Now Playing 会话）
+          const startUrl = `${base}/Users/${encodeURIComponent(params.server.userId)}/PlayingItems/${encodeURIComponent(itemId)}`;
+          const startQ = new URLSearchParams();
+          if (params.mediaSourceId) startQ.set('MediaSourceId', params.mediaSourceId);
+          if (params.playSessionId) startQ.set('PlaySessionId', params.playSessionId);
+          await timedFetch(`${startUrl}?${startQ.toString()}`, {
+            method: 'POST',
+            headers: {
+              ...buildEmbyAuthHeaders(params.server),
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          }).catch(() => undefined);
+
+          const q = new URLSearchParams();
+          q.set('PositionTicks', String(positionTicks));
+          if (params.mediaSourceId) q.set('MediaSourceId', params.mediaSourceId);
+          if (params.playSessionId) q.set('PlaySessionId', params.playSessionId);
+
+          const url = `${base}/Users/${encodeURIComponent(params.server.userId)}/PlayingItems/${encodeURIComponent(itemId)}/Progress?${q.toString()}`;
+          const res = await timedFetch(url, {
+            method: 'POST',
+            headers: {
+              ...buildEmbyAuthHeaders(params.server),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              PositionTicks: positionTicks,
+              IsPaused: false,
+              PlayedToCompletion: false,
+              MediaSourceId: params.mediaSourceId,
+              PlaySessionId: params.playSessionId,
+            }),
+          });
+          if (res.ok || res.status === 204) {
+            progOk = true;
+          }
+        }
+      } catch {
+        /* ignore session progress errors */
+      }
+    }
+
+    if (udOk || progOk) {
+      return {
+        success: true,
+        positionTicks: params.isCompleted ? 0 : positionTicks,
+        runtimeTicks: runtimeTicks || undefined,
+        method: udOk && progOk ? 'both' : udOk ? 'userdata' : 'playing_progress',
+      };
+    }
+
     return {
-      success: true,
+      success: false,
+      message: lastError || '进度写回失败',
+      method: 'none',
       positionTicks: params.isCompleted ? 0 : positionTicks,
       runtimeTicks: runtimeTicks || undefined,
-      method: udOk && progOk ? 'both' : udOk ? 'userdata' : 'playing_progress',
     };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
-
-  return {
-    success: false,
-    message: lastError || '进度写回失败',
-    method: 'none',
-    positionTicks: params.isCompleted ? 0 : positionTicks,
-    runtimeTicks: runtimeTicks || undefined,
-  };
 }
 
 /**

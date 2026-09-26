@@ -117,3 +117,45 @@ describe('embyPlaystate', () => {
     expect(ret.message).toMatch(/0/);
   });
 });
+
+describe('reportEmbyPlaybackProgress timeout', () => {
+  it('各写回请求携带 abort signal（超时守卫接线）', async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response(null, { status: 204 });
+    });
+    const ret = await reportEmbyPlaybackProgress({
+      server: { url: 'http://emby.local:8096', apiKey: 'k', accessToken: 'tok', userId: 'u1', type: 'emby' },
+      itemId: '99',
+      positionSeconds: 42,
+      durationSeconds: 120,
+      isStopped: true,
+      fetchImpl: fetchImpl as any,
+    });
+    expect(ret.success).toBe(true);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
+  });
+
+  it('服务器黑洞时整次写回在超时预算内结束（fire-and-forget 不堆积）', async () => {
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener('abort', abort, { once: true });
+      }));
+    const started = Date.now();
+    const ret = await reportEmbyPlaybackProgress({
+      server: { url: 'http://emby.local:8096', apiKey: 'k', accessToken: 'tok', userId: 'u1', type: 'emby' },
+      itemId: '99',
+      positionSeconds: 42,
+      isStopped: true,
+      fetchImpl: fetchImpl as any,
+      timeoutMs: 80,
+    });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(ret.success).toBe(false);
+  });
+});

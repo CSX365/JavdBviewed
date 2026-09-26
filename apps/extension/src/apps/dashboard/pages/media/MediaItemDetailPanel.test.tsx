@@ -467,4 +467,109 @@ describe('MediaItemDetailPanel runtime behavior', () => {
 
     await mounted.unmount();
   });
+
+  describe('连接类失败块（远端媒体服务器不可达）', () => {
+    it('连接超时时渲染明确失败块 + 重试/关闭，不显示「（仍可播放）」', async () => {
+      const mounted = mount(makeItem());
+      await mounted.rerender(makeItem());
+
+      await act(async () => {
+        embyCallbacks.get('emby-item-1')?.({ success: false, error: '连接超时' });
+      });
+
+      const failure = mounted.host.querySelector('.ml-detail-failure');
+      expect(failure).not.toBeNull();
+      expect(mounted.host.textContent).toContain('无法连接媒体服务器（连接超时）');
+      expect(mounted.host.textContent).toContain('服务器可能离线或网络不通，请稍后重试');
+      expect(mounted.host.textContent).not.toContain('（仍可播放）');
+      expect(failure?.textContent).toContain('重试');
+      expect(failure?.textContent).toContain('关闭');
+      await mounted.unmount();
+    });
+
+    it('点击失败块内重试会重新发送 GET_ITEM_DETAIL，成功后失败块消失', async () => {
+      const mounted = mount(makeItem());
+      await mounted.rerender(makeItem());
+
+      await act(async () => {
+        embyCallbacks.get('emby-item-1')?.({ success: false, error: '连接超时' });
+      });
+
+      const failure = mounted.host.querySelector('.ml-detail-failure');
+      const retry = Array.from(failure?.querySelectorAll('button') ?? []).find((b) =>
+        b.textContent?.includes('重试'),
+      );
+      expect(retry).toBeInstanceOf(HTMLButtonElement);
+
+      await act(async () => {
+        retry?.click();
+      });
+
+      // 重试 = 同一个 itemId 重新注册回调（消息重发）
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(2);
+      expect(embyCallbacks.has('emby-item-1')).toBe(true);
+
+      await act(async () => {
+        embyCallbacks.get('emby-item-1')?.({
+          success: true,
+          detail: makeDetail('emby-item-1', '重试后详情'),
+        });
+      });
+
+      expect(mounted.host.textContent).toContain('重试后详情');
+      expect(mounted.host.querySelector('.ml-detail-failure')).toBeNull();
+      await mounted.unmount();
+    });
+
+    it('点击失败块内关闭调用 onClose', async () => {
+      const mounted = mount(makeItem());
+      await mounted.rerender(makeItem());
+
+      await act(async () => {
+        embyCallbacks.get('emby-item-1')?.({ success: false, error: '连接超时' });
+      });
+
+      const failure = mounted.host.querySelector('.ml-detail-failure');
+      const close = Array.from(failure?.querySelectorAll('button') ?? []).find((b) =>
+        b.textContent?.includes('关闭'),
+      );
+      expect(close).toBeInstanceOf(HTMLButtonElement);
+
+      await act(async () => {
+        close?.click();
+      });
+      expect(mounted.onClose).toHaveBeenCalledTimes(1);
+      await mounted.unmount();
+    });
+
+    it('非连接类错误保留「（仍可播放）」兜底提示，不渲染失败块', async () => {
+      const mounted = mount(makeItem());
+      await mounted.rerender(makeItem());
+
+      await act(async () => {
+        embyCallbacks.get('emby-item-1')?.({ success: false, error: '拉取详情失败' });
+      });
+
+      expect(mounted.host.textContent).toContain('拉取详情失败（仍可播放）');
+      expect(mounted.host.querySelector('.ml-detail-failure')).toBeNull();
+      await mounted.unmount();
+    });
+
+    it('loading 中关闭按钮可用（不被请求锁死）', async () => {
+      const mounted = mount(makeItem());
+      await mounted.rerender(makeItem());
+
+      // 不 resolve 回调，保持 loading
+      expect(mounted.host.textContent).toContain('正在从媒体服务器拉取详情…');
+      const close = findButton(mounted.host, '关闭');
+      expect(close.disabled).toBe(false);
+
+      await act(async () => {
+        close.click();
+      });
+      expect(mounted.onClose).toHaveBeenCalledTimes(1);
+      await mounted.unmount();
+    });
+  });
+
 });

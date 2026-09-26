@@ -3,7 +3,8 @@
  * @description Emby 扩展内取流：Static 拼接 + PlaybackInfo 解析
  * @module features/embyLibrary
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { EMBY_FETCH_TIMEOUT_MESSAGE } from './fetchWithTimeout';
 import { buildStaticStreamUrl, detectEmbyStreamType, resolveEmbyStreamUrl } from './embyPlayback';
 
 describe('embyPlayback', () => {
@@ -237,5 +238,39 @@ describe('embyPlayback', () => {
     expect(ret.streamUrl).toContain('MediaSourceId=ms7');
     expect(ret.streamUrl).toContain('PlaySessionId=sess');
     expect(ret.streamUrl).toContain('api_key=tok');
+  });
+});
+
+describe('resolveEmbyStreamUrl timeout', () => {
+  it('PlaybackInfo 黑洞时在超时预算内返回失败（连接超时），不无限悬挂', async () => {
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener('abort', abort, { once: true });
+      }));
+    const started = Date.now();
+    const ret = await resolveEmbyStreamUrl({
+      server: { url: 'http://emby.local:8096', apiKey: 'tok', type: 'emby' },
+      itemId: '999',
+      fetchImpl: fetchImpl as any,
+      timeoutMs: 80,
+    });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(ret.success).toBe(false);
+    expect(ret.message).toBe(EMBY_FETCH_TIMEOUT_MESSAGE);
+  });
+
+  it('PlaybackInfo 4xx/5xx 的直链回退保持不变（裁决 R1=X：保留既有能力）', async () => {
+    const fetchImpl = (async () => new Response('err', { status: 500 })) as any;
+    const ret = await resolveEmbyStreamUrl({
+      server: { url: 'http://emby.local:8096', apiKey: 'tok', type: 'emby' },
+      itemId: '999',
+      fetchImpl,
+    });
+    expect(ret.success).toBe(true);
+    expect(ret.static).toBe(true);
+    expect(ret.message).toContain('PlaybackInfo 失败 (500)');
   });
 });
