@@ -180,6 +180,42 @@
     transform: scale(1.1);
     accent-color: var(--webdav-primary);
 }
+/* 本地清单：始终包含在备份中（不可选），与可选备份项视觉区分 */
+.webdav-data-range-fixed {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border-primary);
+    border-radius: 6px;
+}
+
+.webdav-data-range-fixed i {
+    font-size: 14px;
+    color: var(--webdav-secondary);
+    width: 16px;
+    text-align: center;
+    margin-top: 3px;
+}
+
+.webdav-data-range-fixed .webdav-range-fixed-label {
+    display: flex;
+    flex-direction: column;
+    font-size: 14px;
+    color: var(--webdav-text);
+}
+
+.webdav-range-fixed-badge {
+    flex: none;
+    margin-top: 2px;
+    padding: 1px 6px;
+    font-size: 11px;
+    color: var(--webdav-primary);
+    background: rgba(99, 102, 241, 0.12);
+    border-radius: 999px;
+    white-space: nowrap;
+}
 
 .webdav-auto-control {
     margin: 0;

@@ -801,6 +801,18 @@ export function WebdavSettingsPage() {
                     </span>
                   </label>
                 ))}
+                {/* 本地清单始终包含在备份中（备份管线无条件收集 lists），以固定项呈现，不做装饰性开关 */}
+                <div className="flex items-start gap-2 rounded-[var(--radius-2)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-1.5 text-[13px] text-[var(--color-fg)]">
+                  <span className="mt-0.5 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-muted)]">
+                    始终包含
+                  </span>
+                  <span>
+                    <span className="font-semibold">本地清单（清单/系列/标签）</span>
+                    <span className="mt-0.5 block text-[12px] text-[var(--color-fg-muted)]">
+                      清单、系列、标签及其内作品归属始终参与备份，不参与选择
+                    </span>
+                  </span>
+                </div>
               </div>
             </SettingSection>
           </div>

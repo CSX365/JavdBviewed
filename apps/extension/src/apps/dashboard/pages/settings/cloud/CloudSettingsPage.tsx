@@ -670,6 +670,12 @@ export function CloudSettingsPage() {
             />
           </SettingField>
 
+          <div className="rounded-[var(--radius-2)] border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2.5 py-2 text-[12px] leading-relaxed text-[var(--color-fg-muted)]">
+            <div className="mb-0.5 font-semibold text-[var(--color-fg)]">同步范围</div>
+            自动同步全部数据类型（无范围开关）：观看记录、本地清单（清单/系列/标签，含清单内作品归属）、
+            演员、新作品、订阅与相关设置等。本地清单与作品归属的变更会随下一次同步送达其它设备。
+          </div>
+
           {syncReport ? <SyncResultPanel report={syncReport} /> : <EmptySyncHint />}
         </SettingSection>
       ) : (
