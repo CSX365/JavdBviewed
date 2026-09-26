@@ -60,6 +60,17 @@ export async function fetchEmbyItemDetail(params: {
   const fetchImpl = params.fetchImpl || fetch;
   if (!base || !itemId) return { success: false, error: '缺少服务器或 itemId' };
 
+  // 凭据守卫：无 accessToken 也无 API Key 时不发请求（仅账号+密码未登录会在此
+  // 被拦截并给出可操作的配置指引，而不是裸奔 401 后误报「请重新登录」）
+  const hasSession = Boolean(String(params.server.accessToken || '').trim());
+  const hasApiKey = Boolean(String(params.server.apiKey || '').trim());
+  if (!hasSession && !hasApiKey) {
+    return {
+      success: false,
+      error: '媒体服务器未配置凭据：请在 Emby 设置中填写 API Key，或填写用户名+密码并登录后使用',
+    };
+  }
+
   // 单一超时预算：服务器黑洞时整组请求在 timeoutMs 内必然落到失败态，
   // 而不是 item 的 3 条候选路径各自挂到 TCP 层（旧行为=分钟级~无限挂起）
   const timeoutMs = params.timeoutMs ?? EMBY_LIBRARY_REQUEST_TIMEOUT_MS;
@@ -86,7 +97,13 @@ export async function fetchEmbyItemDetail(params: {
     if (!itemRes.ok) {
       if (itemRes.status === 401 || itemRes.status === 403) {
         embyLog.warn('详情鉴权失败', { itemId, status: itemRes.status });
-        return { success: false, error: '鉴权失败：请重新登录媒体服务器账号' };
+        // 有会话令牌才提示重新登录；仅 API Key 时「重新登录」是误导
+        return {
+          success: false,
+          error: hasSession
+            ? '鉴权失败：用户令牌无效，请重新登录媒体服务器账号'
+            : '鉴权失败：请检查 API Key 是否有效，或登录媒体服务器用户账号',
+        };
       }
       const triedHint = itemRes.tried?.length
         ? ` 已尝试 ${itemRes.tried.length} 条路径`

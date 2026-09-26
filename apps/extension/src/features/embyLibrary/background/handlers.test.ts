@@ -432,6 +432,44 @@ describe('emby library background handlers', () => {
     });
   });
 
+  it('fails fast with credential guidance when the server has no usable credentials (no request sent)', async () => {
+    const sendResponse = vi.fn();
+    const fetchImpl = createFetchMock(async () => new Response('{}', { status: 200 }));
+    const deps = createDeps(fetchImpl);
+    (deps.getSettings as any).mockImplementation(async () => ({
+      emby: {
+        mediaServers: [{
+          id: 'acct-only',
+          type: 'emby',
+          name: 'AccountOnly',
+          url: 'http://media.local:8096/',
+          username: 'alice',
+          password: 'secret',
+          enabled: true,
+        }],
+        libraryStatus: { enabled: true, showOnList: true, showOnDetail: true },
+      },
+    }));
+
+    await handleEmbyLibrarySync({ manual: true }, sendResponse, deps);
+
+    // 守卫：无 accessToken 也无 API Key → 不发无鉴权请求
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      synced: 0,
+      failed: 1,
+      error: expect.stringContaining('未配置凭据'),
+      serverResults: [
+        expect.objectContaining({
+          serverId: 'acct-only',
+          success: false,
+          error: expect.stringContaining('未配置凭据'),
+        }),
+      ],
+    }));
+  });
+
   it('preserves the last successful index timestamp when every server fails', async () => {
     const sendResponse = vi.fn();
     const fetchImpl = createFetchMock(async () => new Response('server error', { status: 500 }));

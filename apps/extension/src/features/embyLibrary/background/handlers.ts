@@ -97,13 +97,22 @@ function getEnabledServers(settings: any): EmbyMediaServer[] {
         libraryIds,
         ...(libraryOptions && libraryOptions.length ? { libraryOptions } : {}),
         username: server.username ? String(server.username) : undefined,
+        // password 此前在规范化时被丢弃，导致「仅账号+密码未登录」服务器在
+        // 入口守卫层不可识别；补齐后由守卫给出明确配置指引（不持久化、不外发）
+        password: server.password ? String(server.password) : undefined,
         accessToken: server.accessToken ? String(server.accessToken) : undefined,
         userId: server.userId ? String(server.userId) : undefined,
         userDisplayName: server.userDisplayName ? String(server.userDisplayName) : undefined,
         tokenObtainedAt: Number(server.tokenObtainedAt) || undefined,
       };
     })
-    .filter((server) => server.url && (server.apiKey || server.accessToken));
+    // 仅 账号+密码（未登录会话）的服务器也保留：旧行为在此被静默剔除，
+    // 同步表现为「无服务器」/其它入口报「未找到匹配的已启用媒体服务器」，
+    // 用户看不到缺什么凭据。保留后由各功能入口的凭据守卫
+    // （fetchMediaItemsPage / fetchEmbyItemDetail / resolveEmbyStreamUrl /
+    //  postUserDataProgress）给出可操作的配置指引。
+    .filter((server) =>
+      server.url && (server.apiKey || server.accessToken || (server.username && server.password)));
 }
 
 function filterServersForSync(servers: EmbyMediaServer[], message: any): EmbyMediaServer[] {
@@ -269,6 +278,12 @@ async function fetchMediaItemsPage(
   fetchImpl: typeof fetch,
   opts: { searchTerm?: string; parentId?: string; startIndex?: number },
 ): Promise<EmbyItemsPage> {
+  // 凭据守卫：无 accessToken 也无 API Key 时直接失败，不发无鉴权请求
+  // （旧行为=请求裸奔 → 401 → 误报「API Key 错误」；仅账号+密码未登录的服务
+  //  器同样在此被拦截并给出可操作的配置指引）
+  if (!server.accessToken && !server.apiKey) {
+    throw new Error('媒体服务器未配置凭据：请在 Emby 设置中填写 API Key，或填写用户名+密码后登录');
+  }
   const params = new URLSearchParams({
     Recursive: 'true',
     IncludeItemTypes: 'Movie',

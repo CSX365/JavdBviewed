@@ -422,20 +422,79 @@ export function createEmptyMediaServerDraft(): EmbyMediaServer {
 }
 
 /**
- * 校验新增/确认服务器
+ * 服务器凭据形态（用于新增/编辑弹窗的功能可用性提示与校验）。
+ * 两种凭据对应媒体集成的不同功能，可同时配置：
+ * - API Key：媒体库同步 / 详情拉取 / 播放解析（只读链路）
+ * - 用户名+密码：登录获得用户会话后支持进度写回 / 标记已看
  */
-export function validateMediaServerInput(server: Pick<EmbyMediaServer, 'url' | 'apiKey'>): {
+export type ServerCredentialMode = 'none' | 'apiKey' | 'account' | 'both';
+
+export function serverCredentialMode(
+  input: Pick<EmbyMediaServer, 'apiKey' | 'username' | 'password'>,
+): ServerCredentialMode {
+  const hasKey = Boolean(input.apiKey && input.apiKey.trim());
+  const hasAccount = Boolean(
+    input.username && input.username.trim() && input.password && input.password.trim(),
+  );
+  if (hasKey && hasAccount) return 'both';
+  if (hasKey) return 'apiKey';
+  if (hasAccount) return 'account';
+  return 'none';
+}
+
+/**
+ * 凭据形态 → 功能可用性提示行（表单内展示，真机核实口径见任务线 research）。
+ * loggedIn=true（编辑弹窗已登录会话）时全部功能可用。
+ */
+export function serverCredentialCapabilityLines(
+  input: Pick<EmbyMediaServer, 'apiKey' | 'username' | 'password'> & { loggedIn?: boolean },
+): string[] {
+  if (input.loggedIn) {
+    return [
+      '用户会话已登录：媒体库同步、详情拉取、播放解析、进度写回、标记已看全部可用（会话令牌优先，API Key 兜底）',
+    ];
+  }
+  switch (serverCredentialMode(input)) {
+    case 'both':
+      return [
+        'API Key + 账号密码均已配置：媒体库同步、详情拉取、播放解析立即可用；进度写回与标记已看建议在编辑中登录用户账号后使用（登录后会话令牌优先）',
+      ];
+    case 'apiKey':
+      return [
+        '仅 API Key：媒体库同步、详情拉取、播放解析可用；进度写回与标记已看需再配置用户名（保存后可在编辑中填写）或登录用户账号',
+      ];
+    case 'account':
+      return [
+        '仅账号+密码：保存后请先在编辑弹窗中「登录并保存令牌」；登录前媒体库同步、详情拉取、播放解析不可用',
+      ];
+    default:
+      return [
+        '请至少配置一种凭据：API Key，或 用户名+密码（两者可同时配置，分别对应不同功能）',
+      ];
+  }
+}
+
+/**
+ * 校验新增/确认服务器。
+ * 凭据二选一即可（API Key / 用户名+密码），两者都配置同样合法。
+ */
+export function validateMediaServerInput(
+  server: Pick<EmbyMediaServer, 'url' | 'apiKey' | 'username' | 'password'>,
+): {
   ok: boolean;
   message?: string;
-  field?: 'url' | 'apiKey';
+  field?: 'url' | 'credentials';
 } {
   const url = server.url.trim().replace(/\/+$/, '');
-  const apiKey = server.apiKey.trim();
   if (!isValidServerUrl(url)) {
     return { ok: false, message: '媒体服务器地址需要使用 http 或 https', field: 'url' };
   }
-  if (!apiKey) {
-    return { ok: false, message: '媒体服务器 API Key 不能为空', field: 'apiKey' };
+  if (serverCredentialMode(server) === 'none') {
+    return {
+      ok: false,
+      message: '媒体服务器需要至少一种凭据（API Key / 用户名+密码）',
+      field: 'credentials',
+    };
   }
   return { ok: true };
 }

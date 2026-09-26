@@ -289,7 +289,13 @@ async function postUserDataProgress(params: {
         Accept: 'application/json',
       };
     } else {
-      return { success: false, message: '无可用鉴权写 UserData', method: 'none' };
+      // 凭据守卫：无会话、无 API Key 时不再输出晦涩的「无可用鉴权」，
+      // 直接给出可操作的配置指引
+      return {
+        success: false,
+        message: '写回进度缺少可用凭据：请在 Emby 设置中填写用户名+密码并登录用户，或配置 API Key 与用户名',
+        method: 'none',
+      };
     }
 
     const body: Record<string, unknown> = {

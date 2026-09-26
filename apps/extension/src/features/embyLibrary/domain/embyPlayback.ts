@@ -323,7 +323,11 @@ export async function resolveEmbyStreamUrl(params: {
     return { success: false, message: '缺少服务器地址或 itemId' };
   }
   if (!token) {
-    return { success: false, message: '请先配置 API Key，或登录媒体服务器用户账号' };
+    // 凭据守卫：未登录会话且无 API Key 时直接给出可操作的配置指引
+    return {
+      success: false,
+      message: '请先配置 API Key，或登录媒体服务器用户账号（Emby 设置-媒体服务器来源，填写用户名+密码后「登录并保存令牌」）',
+    };
   }
 
   const detailRoute = params.server.type === 'jellyfin' ? 'details' : 'item';

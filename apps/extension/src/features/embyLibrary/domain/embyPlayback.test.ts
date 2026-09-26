@@ -8,6 +8,19 @@ import { EMBY_FETCH_TIMEOUT_MESSAGE } from './fetchWithTimeout';
 import { buildStaticStreamUrl, detectEmbyStreamType, resolveEmbyStreamUrl } from './embyPlayback';
 
 describe('embyPlayback', () => {
+  it('guards missing credentials with actionable guidance (no request sent)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const ret = await resolveEmbyStreamUrl({
+      server: { url: 'http://emby.local:8096', type: 'emby' as const, apiKey: '', accessToken: '' },
+      itemId: '1',
+      fetchImpl,
+    });
+    expect(ret.success).toBe(false);
+    expect(ret.message).toContain('请先配置 API Key，或登录媒体服务器用户账号');
+    expect(ret.message).toContain('Emby 设置-媒体服务器来源');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('builds static stream urls with token and media source', () => {
     const url = buildStaticStreamUrl(
       'http://emby.local:8096',
