@@ -41,6 +41,8 @@ import {
   removeMatchUrlAt,
   removeMediaServerAt,
   SERVER_TYPE_OPTIONS,
+  serverCredentialCapabilityLines,
+  serverCredentialMode,
   updateMatchUrlAt,
   updateMediaServerAt,
   validateMediaServerInput,
@@ -167,18 +169,29 @@ export function EmbySettingsPage() {
       await toast(v.message || '输入无效', 'warning');
       return;
     }
+    const nextServer = {
+      ...serverDraft,
+      url: serverDraft.url.trim().replace(/\/+$/, ''),
+      apiKey: serverDraft.apiKey.trim(),
+      username: (serverDraft.username || '').trim(),
+      password: (serverDraft.password || '').trim(),
+    };
     setFormAndSchedule(
       (prev) => ({
         ...prev,
-        mediaServers: addMediaServer(prev.mediaServers, {
-          ...serverDraft,
-          url: serverDraft.url.trim().replace(/\/+$/, ''),
-          apiKey: serverDraft.apiKey.trim(),
-        }),
+        mediaServers: addMediaServer(prev.mediaServers, nextServer),
       }),
       true,
     );
     setServerDraft(null);
+    // 仅账号+密码（无 API Key、未登录会话）：添加成功但用户会话尚不存在，
+    // 必须明确告知「先登录」，避免保存后同步/详情/播放静默 401
+    if (serverCredentialMode(nextServer) === 'account') {
+      await toast(
+        '服务器已添加。登录用户账号前，媒体库同步/详情/播放不可用，请在编辑中先「登录并保存令牌」',
+        'warning',
+      );
+    }
   };
 
   const requestRemoveServer = (index: number) => {
@@ -1142,6 +1155,21 @@ function MediaServerRow({
         <p className="m-0 mt-2 text-[12px] leading-5 text-[var(--color-fg-muted)]">
           API Key 负责扫库；用户登录后的 AccessToken 用于标记真实已看。用户名和密码会随来源配置保存，用于重新登录和同步观看状态。
         </p>
+        <div
+          className="emby-server-credential-hint mt-2 rounded-[var(--radius-2)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] leading-5 text-[var(--color-fg-muted)]"
+          aria-live="polite"
+        >
+          {serverCredentialCapabilityLines({
+            apiKey: server.apiKey,
+            username: loginUsername,
+            password: server.password || '',
+            loggedIn: userLoggedIn,
+          }).map((line) => (
+            <p key={line} className="m-0">
+              {line}
+            </p>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1155,7 +1183,7 @@ type MediaServerCreateRowProps = {
   onCancel: () => void;
 };
 
-function MediaServerCreateRow({
+export function MediaServerCreateRow({
   draft,
   disabled,
   onChange,
@@ -1222,6 +1250,26 @@ function MediaServerCreateRow({
         value={draft.apiKey}
         onChange={(value) => onChange({ ...draft, apiKey: value })}
       />
+      <SettingField id="emby-create-server-username" label="用户名">
+        <Input
+          id="emby-create-server-username"
+          className="emby-create-server-username"
+          disabled={disabled}
+          placeholder="用于登录并写回观看状态（可选）"
+          autoComplete="username"
+          value={draft.username || ''}
+          onChange={(e) => onChange({ ...draft, username: e.currentTarget.value })}
+        />
+      </SettingField>
+      <SecretField
+        id="emby-create-server-password"
+        label="密码"
+        disabled={disabled}
+        placeholder="与用户名配套（可选）"
+        autoComplete="current-password"
+        value={draft.password || ''}
+        onChange={(value) => onChange({ ...draft, password: value })}
+      />
       <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
         <SettingToggleRow
           id="emby-create-server-enabled"
@@ -1250,6 +1298,16 @@ function MediaServerCreateRow({
             <i className="fas fa-times" aria-hidden="true" /> 取消
           </Button>
         </div>
+      </div>
+      <div
+        className="emby-create-server-credential-hint md:col-span-2 rounded-[var(--radius-2)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] leading-5 text-[var(--color-fg-muted)]"
+        aria-live="polite"
+      >
+        {serverCredentialCapabilityLines(draft).map((line) => (
+          <p key={line} className="m-0">
+            {line}
+          </p>
+        ))}
       </div>
     </div>
   );

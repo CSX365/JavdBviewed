@@ -23,6 +23,8 @@ import {
   validateEmbyForm,
   validateMediaServerInput,
   hasUsableServerCredentials,
+  serverCredentialMode,
+  serverCredentialCapabilityLines,
 } from './embySettingsModel';
 import { isEmbyRecognitionEnabled, isEmbyLibraryEnabled } from '../../../../../utils/config';
 
@@ -374,10 +376,69 @@ describe('embySettingsModel', () => {
     const draft = createEmptyMediaServerDraft();
     expect(draft.type).toBe('emby');
     expect(draft.enabled).toBe(true);
-    expect(validateMediaServerInput({ url: 'bad', apiKey: '' }).ok).toBe(false);
+    expect(validateMediaServerInput({ url: 'bad', apiKey: '', username: '', password: '' }).ok).toBe(false);
     expect(
-      validateMediaServerInput({ url: 'http://192.168.1.1:8096', apiKey: 'k' }).ok,
+      validateMediaServerInput({ url: 'http://192.168.1.1:8096', apiKey: 'k', username: '', password: '' }).ok,
     ).toBe(true);
+  });
+
+  it('validateMediaServerInput accepts all three credential shapes and rejects none', () => {
+    const base = { url: 'http://192.168.1.1:8096/' };
+    // 仅 API Key
+    expect(
+      validateMediaServerInput({ ...base, apiKey: 'k', username: '', password: '' }).ok,
+    ).toBe(true);
+    // 仅 用户名+密码
+    expect(
+      validateMediaServerInput({ ...base, apiKey: '', username: 'u', password: 'p' }).ok,
+    ).toBe(true);
+    // 两者都配（合法，不得报错）
+    expect(
+      validateMediaServerInput({ ...base, apiKey: 'k', username: 'u', password: 'p' }).ok,
+    ).toBe(true);
+    // 全空 → 明确凭据错误
+    const none = validateMediaServerInput({ ...base, apiKey: '', username: '', password: '' });
+    expect(none.ok).toBe(false);
+    expect(none.field).toBe('credentials');
+    expect(none.message).toContain('至少一种凭据');
+    // 只有用户名没有密码 → 视为未配置账号
+    expect(
+      validateMediaServerInput({ ...base, apiKey: '', username: 'u', password: '' }).ok,
+    ).toBe(false);
+    // 空白串等同未配置
+    expect(
+      validateMediaServerInput({ ...base, apiKey: '  ', username: '  ', password: 'p' }).ok,
+    ).toBe(false);
+    // url 非法优先级不变
+    const badUrl = validateMediaServerInput({ url: 'ftp://x', apiKey: 'k', username: '', password: '' });
+    expect(badUrl.ok).toBe(false);
+    expect(badUrl.field).toBe('url');
+  });
+
+  it('serverCredentialMode classifies apiKey / account / both / none', () => {
+    expect(serverCredentialMode({ apiKey: 'k', username: '', password: '' })).toBe('apiKey');
+    expect(serverCredentialMode({ apiKey: '', username: 'u', password: 'p' })).toBe('account');
+    expect(serverCredentialMode({ apiKey: 'k', username: 'u', password: 'p' })).toBe('both');
+    expect(serverCredentialMode({ apiKey: '', username: '', password: '' })).toBe('none');
+    expect(serverCredentialMode({ apiKey: ' ', username: 'u', password: ' ' })).toBe('none');
+  });
+
+  it('serverCredentialCapabilityLines reflects the credential shape and login state', () => {
+    expect(serverCredentialCapabilityLines({ apiKey: '', username: '', password: '' })[0])
+      .toContain('请至少配置一种凭据');
+    expect(serverCredentialCapabilityLines({ apiKey: 'k', username: '', password: '' })[0])
+      .toContain('进度写回与标记已看需再配置用户名');
+    expect(serverCredentialCapabilityLines({ apiKey: '', username: 'u', password: 'p' })[0])
+      .toContain('登录并保存令牌');
+    expect(serverCredentialCapabilityLines({ apiKey: 'k', username: 'u', password: 'p' })[0])
+      .toContain('立即可用');
+    const loggedIn = serverCredentialCapabilityLines({
+      apiKey: '',
+      username: 'u',
+      password: 'p',
+      loggedIn: true,
+    })[0];
+    expect(loggedIn).toContain('全部可用');
   });
 });
 
