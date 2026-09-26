@@ -24,6 +24,10 @@ import {
   getFilterActionLabel,
   TabProps,
 } from './_shared';
+import {
+  ACTOR_LIST_FILTER_FIELDS,
+  DISPLAY_FILTER_FIELDS,
+} from './listFilterFields';
 export function ListTab({
   form,
   setToggle,
@@ -110,6 +114,31 @@ export function ListTab({
             </div>
           </div>
         ) : null}
+      </SettingSection>
+
+      <SettingSection title="番号过滤" description="按状态/类型自动隐藏列表中的影片（原「显示设置」页迁入）">
+        {DISPLAY_FILTER_FIELDS.map((field) => (
+          <SettingToggleRow
+            key={field.id}
+            id={field.id}
+            label={field.label}
+            checked={form[field.key] as boolean}
+            onChange={(checked) => setToggle(field.key, checked)}
+          />
+        ))}
+      </SettingSection>
+
+      <SettingSection title="演员过滤（列表）" description="基于本地演员库与订阅信息，近似识别标题中的演员并进行过滤（通过标题识别，故存在一定误差）">
+        {ACTOR_LIST_FILTER_FIELDS.map((field) => (
+          <SettingToggleRow
+            key={field.id}
+            id={field.id}
+            label={field.label}
+            description={field.description}
+            checked={form[field.key] as boolean}
+            onChange={(checked) => setToggle(field.key, checked)}
+          />
+        ))}
       </SettingSection>
 
       <SettingSection title="点击增强" description="优化列表/详情卡片的点击打开行为">

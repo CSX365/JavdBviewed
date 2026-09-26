@@ -400,3 +400,72 @@ describe('enhancementSettingsModel', () => {
     expect(sites.fanza).toBe(false);
   });
 });
+
+describe('list filter fields (migrated from display settings)', () => {
+  it('defaults the 7 list filter toggles to false', () => {
+    const d = DEFAULT_ENHANCEMENT_SETTINGS_FORM;
+    expect(d.hideViewed).toBe(false);
+    expect(d.hideBrowsed).toBe(false);
+    expect(d.hideVR).toBe(false);
+    expect(d.hideWant).toBe(false);
+    expect(d.hideBlacklistedActorsInList).toBe(false);
+    expect(d.hideNonFavoritedActorsInList).toBe(false);
+    expect(d.hideUnrecognizedActorsInList).toBe(false);
+  });
+
+  it('maps empty settings to list filter defaults (zero backfill)', () => {
+    const form = mapSettingsToEnhancementForm(undefined);
+    expect(form.hideViewed).toBe(false);
+    expect(form.hideBrowsed).toBe(false);
+    expect(form.hideVR).toBe(false);
+    expect(form.hideWant).toBe(false);
+    expect(form.hideBlacklistedActorsInList).toBe(false);
+    expect(form.hideNonFavoritedActorsInList).toBe(false);
+    expect(form.hideUnrecognizedActorsInList).toBe(false);
+  });
+
+  it('reads display.* and listEnhancement.* filter keys without changing namespaces', () => {
+    const form = mapSettingsToEnhancementForm({
+      display: { hideViewed: true, hideVR: true },
+      listEnhancement: {
+        hideBlacklistedActorsInList: true,
+        hideUnrecognizedActorsInList: true,
+      },
+    } as any);
+    expect(form.hideViewed).toBe(true);
+    expect(form.hideBrowsed).toBe(false);
+    expect(form.hideVR).toBe(true);
+    expect(form.hideWant).toBe(false);
+    expect(form.hideBlacklistedActorsInList).toBe(true);
+    expect(form.hideNonFavoritedActorsInList).toBe(false);
+    expect(form.hideUnrecognizedActorsInList).toBe(true);
+  });
+
+  it('writes display.* and listEnhancement.* namespaces and preserves unknown keys', () => {
+    const current = {
+      display: { hideVR: true, customLegacy: 'keep' },
+      listEnhancement: { enableActorPenetration: true, another: 42 },
+    } as any;
+    const form = {
+      ...DEFAULT_ENHANCEMENT_SETTINGS_FORM,
+      hideViewed: true,
+      hideBrowsed: true,
+      hideWant: true,
+      enableActorPenetration: true,
+      hideNonFavoritedActorsInList: true,
+      hideUnrecognizedActorsInList: true,
+    };
+    const next = applyEnhancementFormToSettings(current, form);
+    expect(next.display.hideViewed).toBe(true);
+    expect(next.display.hideBrowsed).toBe(true);
+    // form 为权威写入：current.display.hideVR=true 被 form 默认 false 覆盖
+    expect(next.display.hideVR).toBe(false);
+    expect(next.display.hideWant).toBe(true);
+    expect(next.display.customLegacy).toBe('keep');
+    expect(next.listEnhancement.enableActorPenetration).toBe(true);
+    expect(next.listEnhancement.another).toBe(42);
+    expect(next.listEnhancement.hideBlacklistedActorsInList).toBe(false);
+    expect(next.listEnhancement.hideNonFavoritedActorsInList).toBe(true);
+    expect(next.listEnhancement.hideUnrecognizedActorsInList).toBe(true);
+  });
+});

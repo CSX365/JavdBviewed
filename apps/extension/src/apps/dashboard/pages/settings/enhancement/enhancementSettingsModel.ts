@@ -33,6 +33,21 @@ export type EnhancementSettingsFormState = {
   /** 内容过滤「隐藏」动作总开关：关闭后 hide 规则只匹配不隐藏 */
   contentFilterHideEnabled: boolean;
   filterRules: KeywordFilterRule[];
+  // —— 列表过滤（2026-09-27 IA 裁决：自「显示设置」页迁入，键命名空间不变：display.*/listEnhancement.*）——
+  /** display.hideViewed */
+  hideViewed: boolean;
+  /** display.hideBrowsed */
+  hideBrowsed: boolean;
+  /** display.hideVR */
+  hideVR: boolean;
+  /** display.hideWant */
+  hideWant: boolean;
+  /** listEnhancement.hideBlacklistedActorsInList */
+  hideBlacklistedActorsInList: boolean;
+  /** listEnhancement.hideNonFavoritedActorsInList（实际行为：匹配演员全部在黑名单中） */
+  hideNonFavoritedActorsInList: boolean;
+  /** listEnhancement.hideUnrecognizedActorsInList（空演员库保护：库为空时不隐藏） */
+  hideUnrecognizedActorsInList: boolean;
   enableClickEnhancement: boolean;
   enableClickEnhancementList: boolean;
   enableClickEnhancementDetail: boolean;
@@ -253,6 +268,13 @@ export const DEFAULT_ENHANCEMENT_SETTINGS_FORM: EnhancementSettingsFormState = {
   enableContentFilter: false,
   contentFilterHideEnabled: true,
   filterRules: [],
+  hideViewed: false,
+  hideBrowsed: false,
+  hideVR: false,
+  hideWant: false,
+  hideBlacklistedActorsInList: false,
+  hideNonFavoritedActorsInList: false,
+  hideUnrecognizedActorsInList: false,
   enableClickEnhancement: true,
   enableClickEnhancementList: true,
   enableClickEnhancementDetail: true,
@@ -475,6 +497,7 @@ export function mapSettingsToEnhancementForm(
   const ao = s.anchorOptimization || {};
   const ph = s.passwordHelper || {};
   const cf = s.contentFilter || {};
+  const display = s.display || {};
   const siteAppearance = s.siteAppearance || {};
   const libraryMatchStatus = s.libraryMatchStatus ?? le.libraryMatchStatus ?? {};
 
@@ -482,6 +505,14 @@ export function mapSettingsToEnhancementForm(
     enableContentFilter: !!(ux.enableContentFilter ?? cf.enabled),
     contentFilterHideEnabled: cf.hideEnabled !== false,
     filterRules: mapFilterRules(cf.keywordRules),
+    // 列表过滤（自「显示设置」页迁入；display.*/listEnhancement.* 键命名空间不变，存量零回填）
+    hideViewed: !!display.hideViewed,
+    hideBrowsed: !!display.hideBrowsed,
+    hideVR: !!display.hideVR,
+    hideWant: !!display.hideWant,
+    hideBlacklistedActorsInList: !!le.hideBlacklistedActorsInList,
+    hideNonFavoritedActorsInList: !!le.hideNonFavoritedActorsInList,
+    hideUnrecognizedActorsInList: le.hideUnrecognizedActorsInList === true,
     enableClickEnhancement: le.enableClickEnhancement !== false,
     enableClickEnhancementList: le.enableClickEnhancementList !== false,
     enableClickEnhancementDetail: le.enableClickEnhancementDetail !== false,
@@ -673,9 +704,18 @@ export function applyEnhancementFormToSettings(
   const existingPop = existingList.popularityEffects || {};
   const existingSorting = existingList.sorting || {};
   const existingMs = (current as any).magnetSearch || {};
+  const existingDisplay = (current as any).display || {};
 
   return {
     ...current,
+    // 列表过滤：display.* 键（自「显示设置」页迁入，展开保留未知键）
+    display: {
+      ...existingDisplay,
+      hideViewed: form.hideViewed,
+      hideBrowsed: form.hideBrowsed,
+      hideVR: form.hideVR,
+      hideWant: form.hideWant,
+    },
     libraryMatchStatus: {
       ...((current as any).libraryMatchStatus || {}),
       enabled: form.enableLibraryMatchStatus,
@@ -812,6 +852,9 @@ export function applyEnhancementFormToSettings(
       enableRightClickBackground: true,
       preferredPreviewSource: form.preferredPreviewSource,
       enableActorPenetration: form.enableActorPenetration,
+      hideBlacklistedActorsInList: form.hideBlacklistedActorsInList,
+      hideNonFavoritedActorsInList: form.hideNonFavoritedActorsInList,
+      hideUnrecognizedActorsInList: form.hideUnrecognizedActorsInList,
       enableActorWatermark: form.enableActorWatermark,
       actorWatermarkPosition: form.actorWatermarkPosition,
       actorWatermarkOpacity: form.actorWatermarkOpacity,
