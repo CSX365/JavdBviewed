@@ -11,11 +11,54 @@ type SendResponse = (response: any) => void;  // chrome.runtime 消息回调类�
 
 export interface RequestSchedulerLike {
   enqueue: (url: string, init?: RequestInit) => Promise<Response>;  // 按调度策略排队发起请求
+  /** S1 B2 (cycle-14)：可选，返回 host 剩余冷却 ms（供失败响应回传调用方对齐重试） */
+  getRemainingCooldownMs?: (host: string) => number;
+}
+
+/** 取 URL 的 host（解析失败返回空串），用于 B2 的冷却查询与错误日志限速分组 */
+function fetchHostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/** S1 B2 (cycle-14)：外部 fetch 错误日志限速状态（按 host） */
+interface FetchErrorLogEntry {
+  lastErrorAt: number;    // 上一条错误（无论放行/抑制）的时刻
+  burstStartAt: number;   // 当前抑制 burst 起点（最近一条带栈放行）
+  suppressed: number;     // 自 burst 起点累计被抑制的错误数
+}
+const fetchErrorLogState = new Map<string, FetchErrorLogEntry>();
+const FETCH_ERROR_LOG_WINDOW_MS = 5_000;   // 同 host 距上一条错误 <5s 时不放行带栈日志
+const FETCH_ERROR_LOG_SUMMARY_MS = 30_000; // 抑制 burst 持续 30s 至多补一条汇总（重置后同理）
+
+/** 限速后的错误日志：同 host 距上一条错误 <5s 的连续 burst 只放行首条 console.error（带栈），
+ *  后续抑制计数，burst 持续满 30s 补一条 warn 汇总（重置计数，30s 内不重复）。
+ *  只改日志频率，请求行为不变。 */
+function logExternalFetchError(host: string, error: unknown): void {
+  const now = Date.now();
+  const entry = fetchErrorLogState.get(host);
+  if (!entry || now - entry.lastErrorAt >= FETCH_ERROR_LOG_WINDOW_MS) {
+    console.error('[Background] Failed to fetch external data:', error);
+    fetchErrorLogState.set(host, { lastErrorAt: now, burstStartAt: now, suppressed: 0 });
+    return;
+  }
+  entry.suppressed += 1;
+  entry.lastErrorAt = now;
+  if (now - entry.burstStartAt >= FETCH_ERROR_LOG_SUMMARY_MS) {
+    console.warn(`[Background] Failed to fetch external data: suppressed ${entry.suppressed} recent errors in 30s (host=${host})`);
+    entry.burstStartAt = now;
+    entry.suppressed = 0;
+  }
 }
 
 /**
  * 处理外部数据抓取消息 —— 通过请求调度器 fetch 任意 URL
  * 支持 text/json/blob 三种响应类型，自动 abort 超时
+ * S1 B2 (cycle-14)：可选 firstByteTimeoutMs 首字节快速失败；失败响应附 cooldownMs 供调用方对齐重试；
+ * 错误日志按 host 限速（5s 首条带栈 / 30s 至多一条汇总）
  */
 
 export async function handleExternalDataFetch(
@@ -23,8 +66,9 @@ export async function handleExternalDataFetch(
   sendResponse: SendResponse,
   requestScheduler: RequestSchedulerLike = defaultRequestScheduler,
 ): Promise<void> {
+  // url 提升到 try 外：catch 里的日志限速分组与冷却查询也要用它
+  const url = message?.url;
   try {
-    const url = message?.url;
     const options = (message?.options || {}) as any;
     if (!url) {
       sendResponse({ success: false, error: 'No URL provided' });
@@ -35,6 +79,12 @@ export async function handleExternalDataFetch(
     const controller = new AbortController();
     const timeoutMs = typeof options.timeout === 'number' ? options.timeout : 10000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // S1 B2 (cycle-14): 首字节快速失败——响应头到达前超时即 abort，不再空挂全程超时（轻量探测判败提速）
+    const firstByteTimeoutMs = typeof options.firstByteTimeoutMs === 'number' ? options.firstByteTimeoutMs : 0;
+    let firstByteTimer: ReturnType<typeof setTimeout> | null = null;
+    if (firstByteTimeoutMs > 0) {
+      firstByteTimer = setTimeout(() => controller.abort('no-first-byte'), firstByteTimeoutMs);
+    }
 
     const reqInit: RequestInit = {
       method: options.method || 'GET',
@@ -45,6 +95,10 @@ export async function handleExternalDataFetch(
     };
 
     const response = await requestScheduler.enqueue(url, reqInit);
+    if (firstByteTimer) {
+      clearTimeout(firstByteTimer);
+      firstByteTimer = null;
+    }
     const maxBodyBytes = typeof options.maxBodyBytes === 'number' ? Math.floor(options.maxBodyBytes) : 0;
     let data: any;
     if (responseType === 'json') data = await response.json().catch(() => null);
@@ -56,8 +110,20 @@ export async function handleExternalDataFetch(
     clearTimeout(timer);
     sendResponse({ success: true, data, status: response.status, headers: headersObj });
   } catch (error: any) {
-    console.error('[Background] Failed to fetch external data:', error);
-    sendResponse({ success: false, error: error.message });
+    // S1 B2 (cycle-14): 日志限速（同 host 5s 仅首条带栈，30s 至多一条汇总）
+    logExternalFetchError(fetchHostOf(url), error);
+    // 回传该 host 剩余冷却，调用方据此对齐重试延迟（不削弱重试次数与成功路径）
+    let cooldownMs = 0;
+    try {
+      cooldownMs = requestScheduler.getRemainingCooldownMs?.(fetchHostOf(url)) ?? 0;
+    } catch {
+      cooldownMs = 0;
+    }
+    sendResponse({
+      success: false,
+      error: error.message,
+      ...(cooldownMs > 0 ? { cooldownMs } : {}),
+    });
   }
 }
 

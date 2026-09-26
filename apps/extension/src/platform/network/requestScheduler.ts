@@ -190,6 +190,16 @@ export class RequestScheduler {
   private resetBackoff(host: string): void {
     this.hostBackoffMs.delete(host);
   }
+
+  /**
+   * S1 B2 (cycle-14)：查询 host 剩余冷却（ms），无冷却返回 0。
+   * 供调用方把重试延迟对齐冷却到期时刻——旧行为是立即重新入队、
+   * 由调度器内部空等冷却（多一次消息往返与队列唤醒），墙钟等价但浪费往返。
+   */
+  getRemainingCooldownMs(host: string): number {
+    const until = this.hostCooldownUntil.get(host) || 0;
+    return Math.max(0, until - this.now());
+  }
 }
 
 export const requestScheduler = new RequestScheduler();

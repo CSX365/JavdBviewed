@@ -61,6 +61,13 @@ const SP_PREFIX = '300';
  */
 const GET_PROBE_PREFIX_BYTES = 32768;
 
+/**
+ * S1 B2 (cycle-14)：get 型探测的首字节快速失败窗口（ms）。
+ * 正常站点 TLS 握手+响应头 <1s，3s 拿不到响应头即判本轮失败（按既有冷却链重试）；
+ * 避免坏线路把 SW 的请求挂满 8s 全程超时。仅探测路径使用，115/Emby 线路数据不受影响。
+ */
+const PROBE_FIRST_BYTE_TIMEOUT_MS = 3000;
+
 export const DEFAULT_ONLINE_AVAILABILITY_SITES: OnlineAvailabilitySite[] = [
   {
     key: 'fanza',
@@ -271,9 +278,9 @@ export class OnlineAvailabilityManager {
             headers: {
               Referer: 'https://javdb.com/',
             },
-            // get 型站点只探测正文前缀，parser 型保持整页抓取
+            // get 型站点只探测正文前缀 + 首字节快速失败，parser 型保持整页抓取
             ...(typeof site.probePrefixBytes === 'number' && site.probePrefixBytes > 0
-              ? { maxBodyBytes: site.probePrefixBytes }
+              ? { maxBodyBytes: site.probePrefixBytes, firstByteTimeoutMs: PROBE_FIRST_BYTE_TIMEOUT_MS }
               : {}),
           }), this.config.timeoutMs, `${site.name} availability check`);
           return parseOnlineAvailabilityDocument(site, doc, videoId, url, 200);

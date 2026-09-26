@@ -2,6 +2,10 @@
  * @file httpClient.ts
  * @description HTTP 客户端 —— 支持重试、超时、请求去重、background 代理的 fetch 封装
  * @module platform/network
+ *
+ * S1 B2 (cycle-14)：
+ * - 重试延迟对齐 background 回传的 host 冷却（cooldownMs），免提前入队空等
+ * - 透传 firstByteTimeoutMs 到 background 代理路径（轻量探测首字节快速失败）
  */
 
 import { FetchOptions, NetworkError } from './types';
@@ -123,6 +127,7 @@ export class HttpClient {
       responseType = 'json',
       referrer,
       maxBodyBytes,
+      firstByteTimeoutMs,
     } = config;
 
     const requestHeaders = {
@@ -147,6 +152,7 @@ export class HttpClient {
             responseType,
             referrer,
             ...(typeof maxBodyBytes === 'number' && maxBodyBytes > 0 ? { maxBodyBytes } : {}),
+            ...(typeof firstByteTimeoutMs === 'number' && firstByteTimeoutMs > 0 ? { firstByteTimeoutMs } : {}),
           });
         }
 
@@ -179,7 +185,13 @@ export class HttpClient {
           break;
         }
 
-        await this.delay(Math.pow(2, attempt) * 1000);
+        // S1 B2 (cycle-14)：重试延迟对齐 background 侧 host 冷却——旧行为快重试后
+        // 仍要入队等冷却到期，墙钟等价但多一次消息往返；重试次数与成功路径不变
+        const backoffMs = Math.pow(2, attempt) * 1000;
+        const cooldownMs = isNetworkError(lastError) && typeof lastError.cooldownMs === 'number'
+          ? lastError.cooldownMs
+          : 0;
+        await this.delay(Math.max(backoffMs, cooldownMs));
       }
     }
 
@@ -253,7 +265,9 @@ export class HttpClient {
         }
 
         if (!response.success) {
-          reject(new NetworkError(response.error, url));
+          // S1 B2 (cycle-14)：透传 background 侧 host 剩余冷却，供重试延迟对齐
+          const cooldownMs = typeof response.cooldownMs === 'number' ? response.cooldownMs : undefined;
+          reject(new NetworkError(response.error, url, undefined, cooldownMs));
           return;
         }
 
