@@ -33,6 +33,7 @@ import { installOrchestratorPageLifecycleBindings } from './pageLifecycleBinding
 import { OrchestratorRetryTimers } from './retryTimers';
 import { countContentPerformanceEvent } from '../../../platform/tasks';
 import {
+  BACKGROUND_LEASE_PROMPT_MIN_INTERVAL_MS,
   createTaskKey,
   createDeferredRetryKey,
   getBackgroundLeaseRetryDelayMs,
@@ -97,6 +98,10 @@ class InitOrchestrator {
   private readonly backgroundLeaseDenials = new Map<string, number>();
   // S1: 处于退避等待中的后台租约重试（切回前台立即重跑，不等退避定时器）
   private readonly pendingBackgroundLeaseRetries = new Map<string, { phase: InitPhase; st: ManagedScheduledTask }>();
+  /** S1-14 C1: 最近一次 hidden lease 尝试时间（performance.now 口径），prompt 唤醒 15s 门控用。
+   *  记账点在 scheduleDeferredRetry 的 hidden 容量分支（denial 后）：timer 驱动与 prompt 驱动
+   *  两条路径的尝试都会重入该分支，故均被覆盖。 */
+  private readonly lastLeaseAttemptAt = new Map<string, number>();
   /** S1-14 A3: onLeasePrompt 退订函数（dispose 时释放） */
   private leasePromptUnsubscribe?: () => void;
   // S1: 后台 tab 重任务阶段错峰启动窗口
@@ -232,6 +237,7 @@ class InitOrchestrator {
         this.retryTimers.clear(ph as InitPhase, label);
         this.pendingBackgroundLeaseRetries.delete(key);
         this.backgroundLeaseDenials.delete(key);
+        this.lastLeaseAttemptAt.delete(key);
         if (!pending.st.completed && !pending.st.running) {
           this.log('background lease retry resumed after visibility restore', { phase: ph, label });
           this.runTask(ph as InitPhase, pending.st).catch(() => {});
@@ -291,27 +297,36 @@ class InitOrchestrator {
   }
 
   /**
-   * S1-14 A3: SW 槽位释放 prompt → 取消在飞退避定时器，立即重请求最老退避任务。
+   * S1-14 A3/C1: SW 槽位释放 prompt → 取消在飞退避定时器，立即重请求最老【满足间隔】的退避任务。
    * - 仅处理 hidden 态（回前台后退避集已被 visibilitychange 清空；visible 防御性直接返回）；
+   * - C1 统一 15s 最小间隔门控（距该任务上次 lease 尝试）：AttrC2 归因——denials≥5 后指数退避
+   *   恒 30s 封顶，有效重请求节奏退化成 prompt 广播节奏（实测周期 3.5~17s），形成 hidden tab
+   *   纯租约乒乓（零真实工作，占 renderer 臂差 50~100%）；未达间隔的任务跳过（continue 找下一条），
+   *   由指数退避定时器兜底，退避链本身不受影响；
    * - backgroundLeaseDenials 保留：唤醒后再被拒绝，退避不降级（指数退避仍是 30s 兜底）；
-   * - 任务已被其他路径接管（completed/running）时只释放定时器+记录，不留死任务；
-   * - 每 prompt 只唤醒最老一条（Map 插入序），其余继续按各自退避定时器排程。
+   * - 任务已被其他路径接管（completed/running）时只释放定时器+记账，不留死任务；
+   * - 每 prompt 至多唤醒一条（取第一条满足间隔的），其余继续按各自退避定时器排程。
    */
   private handleLeasePrompt(): void {
     if (typeof document === 'undefined' || document.visibilityState === 'visible') return;
-    const first = this.pendingBackgroundLeaseRetries.entries().next();
-    if (first.done) return;
-    const [key, pending] = first.value;
-    const [ph, label] = key.split('::', 2);
-    if (!pending || pending.st.completed || pending.st.running) {
+    const now = performance.now();
+    for (const [key, pending] of this.pendingBackgroundLeaseRetries.entries()) {
+      const [ph, label] = key.split('::', 2);
+      if (!pending || pending.st.completed || pending.st.running) {
+        this.retryTimers.clear(ph as InitPhase, label);
+        this.pendingBackgroundLeaseRetries.delete(key);
+        this.lastLeaseAttemptAt.delete(key);
+        continue;
+      }
+      const last = this.lastLeaseAttemptAt.get(key);
+      if (last !== undefined && now - last < BACKGROUND_LEASE_PROMPT_MIN_INTERVAL_MS) continue;
       this.retryTimers.clear(ph as InitPhase, label);
       this.pendingBackgroundLeaseRetries.delete(key);
+      this.lastLeaseAttemptAt.delete(key);
+      this.log('lease prompt woke background backoff task', { phase: ph, label });
+      this.runTask(ph as InitPhase, pending.st).catch(() => {});
       return;
     }
-    this.retryTimers.clear(ph as InitPhase, label);
-    this.pendingBackgroundLeaseRetries.delete(key);
-    this.log('lease prompt woke background backoff task', { phase: ph, label });
-    this.runTask(ph as InitPhase, pending.st).catch(() => {});
   }
 
   private scheduleDeferredRetry(phase: InitPhase, st: ManagedScheduledTask, waitReason?: string): void {
@@ -366,6 +381,9 @@ class InitOrchestrator {
     if (isCapacityWait && hidden) {
       this.backgroundLeaseDenials.set(retryKey, (this.backgroundLeaseDenials.get(retryKey) ?? 0) + 1);
       this.pendingBackgroundLeaseRetries.set(retryKey, { phase, st });
+      // C1: denial 入账即一次 lease 尝试（timer 驱动与 prompt 驱动两条路径都经此处），
+      // 记账供 handleLeasePrompt 的 15s 门控使用
+      this.lastLeaseAttemptAt.set(retryKey, performance.now());
     }
     this.log('deferred retry scheduled', { phase, label, waitReason, retryDelayMs, backgroundBackoff: isCapacityWait && hidden });
   }
@@ -635,6 +653,7 @@ class InitOrchestrator {
     this.foregroundDeferredTaskKeys.clear();
     this.backgroundLeaseDenials.clear();
     this.pendingBackgroundLeaseRetries.clear();
+    this.lastLeaseAttemptAt.clear();
     if (this.metricsSaveTimeout !== undefined) {
       window.clearTimeout(this.metricsSaveTimeout);
       this.metricsSaveTimeout = undefined;
@@ -876,6 +895,7 @@ class InitOrchestrator {
           const retryKey = createDeferredRetryKey(phase, st.options.label);
           this.backgroundLeaseDenials.delete(retryKey);
           this.pendingBackgroundLeaseRetries.delete(retryKey);
+          this.lastLeaseAttemptAt.delete(retryKey);
         }
         // 标记任务为已完成（白名单 label 同步 global，供跨页 dependsOn）
         this.markLocalAndMaybeGlobalComplete(label);
@@ -946,6 +966,7 @@ class InitOrchestrator {
           const retryKey = createDeferredRetryKey(phase, st.options.label);
           this.backgroundLeaseDenials.delete(retryKey);
           this.pendingBackgroundLeaseRetries.delete(retryKey);
+          this.lastLeaseAttemptAt.delete(retryKey);
         }
         // 保存任务详细信息（包含错误）
         this.saveTaskDetail(phase, label, 'error', durationMs, String(e));

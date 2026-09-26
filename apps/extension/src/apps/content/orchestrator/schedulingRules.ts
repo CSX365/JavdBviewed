@@ -36,6 +36,16 @@ export function getDeferredRetryDelayMs(waitReason?: string): number {
 export const BACKGROUND_LEASE_RETRY_BASE_MS = 1200;
 export const BACKGROUND_LEASE_RETRY_MAX_MS = 30_000;
 
+/**
+ * S1-14 C1: prompt 唤醒最小间隔（距上次 lease 尝试，hidden 容量型等待）。
+ * AttrC2 归因：denials≥5 后指数退避恒 30s 封顶，有效重请求节奏=prompt 广播节奏
+ * （实测周期 3.5~17s；20 tab 稳态 ~6.6 次尝试/s，每次 2 条消息 + 36~65ms content JS），
+ * 构成 hidden tab 纯租约乒乓（零真实工作，占 renderer 臂差 50~85%、browser 臂差 5~15%）。
+ * prompt 到达时若距上次尝试 <15s 则跳过该任务（交指数退避定时器兜底），
+ * 稳态重请求周期升至 15~36s，尝试率 3~10×↓；预算真释放后最多多等一个 15s 门控窗。
+ */
+export const BACKGROUND_LEASE_PROMPT_MIN_INTERVAL_MS = 15_000;
+
 export function getBackgroundLeaseRetryDelayMs(consecutiveDenials: number, jitter: number = Math.random()): number {
   const step = Math.min(Math.max(0, Math.floor(consecutiveDenials)), 10);
   const capped = Math.min(BACKGROUND_LEASE_RETRY_MAX_MS, BACKGROUND_LEASE_RETRY_BASE_MS * 2 ** step);
