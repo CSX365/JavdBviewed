@@ -325,6 +325,8 @@ function processItem(item: HTMLElement): string | null {
     // 记录隐藏“来源”标记（来源 ≠ 开关）。
     // 是否真正隐藏由 recomputeListHiding 依据当前开关统一裁定，
     // 这样每个隐藏动作都有独立开关，且开关切换可即时生效。
+    // 搜索页豁免=产品预期（2026-09-27 用户裁决）：搜索时用户可能正是想找已看/已浏览的番，
+    // 不在搜索页打状态/VR 来源标记（演员过滤无此门控，搜索页同样生效）。
     if (!STATE.isSearchPage) {
         if (finalIsVR) {
             setHidingSource(item, 'vr', true);

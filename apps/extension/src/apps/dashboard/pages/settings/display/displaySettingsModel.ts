@@ -18,7 +18,6 @@ export type ActorListFilterState = {
   hideBlacklistedActorsInList: boolean;
   hideNonFavoritedActorsInList: boolean;
   hideUnrecognizedActorsInList: boolean;
-  treatSubscribedAsFavorited: boolean;
 };
 
 /**
@@ -34,7 +33,7 @@ export type DisplaySettingsFormState = DisplayFilterState & ActorListFilterState
 /**
  * 与遗留 DisplaySettings / DEFAULT_SETTINGS 对齐的默认值
  * - display.* 默认 false
- * - hideUnrecognizedActorsInList 默认 false（空演员库保护）；treatSubscribedAsFavorited 默认 true
+ * - hideUnrecognizedActorsInList 默认 false（空演员库保护）
  */
 export const DEFAULT_DISPLAY_SETTINGS_FORM: DisplaySettingsFormState = {
   hideViewed: false,
@@ -44,7 +43,6 @@ export const DEFAULT_DISPLAY_SETTINGS_FORM: DisplaySettingsFormState = {
   hideBlacklistedActorsInList: false,
   hideNonFavoritedActorsInList: false,
   hideUnrecognizedActorsInList: false,
-  treatSubscribedAsFavorited: true,
   enableActorPenetration: false,
 };
 
@@ -66,7 +64,6 @@ export function mapSettingsToDisplayForm(
     hideNonFavoritedActorsInList: !!listEnhancement.hideNonFavoritedActorsInList,
     // 默认 false（若未配置；空演员库时不隐藏）
     hideUnrecognizedActorsInList: listEnhancement.hideUnrecognizedActorsInList === true,
-    treatSubscribedAsFavorited: listEnhancement.treatSubscribedAsFavorited !== false,
     enableActorPenetration: (listEnhancement as Record<string, unknown>).enableActorPenetration === true,
   };
 }
@@ -93,7 +90,6 @@ export function applyDisplayFormToSettings(
       hideBlacklistedActorsInList: form.hideBlacklistedActorsInList,
       hideNonFavoritedActorsInList: form.hideNonFavoritedActorsInList,
       hideUnrecognizedActorsInList: form.hideUnrecognizedActorsInList,
-      treatSubscribedAsFavorited: form.treatSubscribedAsFavorited,
     },
   };
 }
@@ -125,18 +121,13 @@ export const ACTOR_LIST_FILTER_FIELDS: {
   {
     key: 'hideNonFavoritedActorsInList',
     id: 'hideNonFavoritedActorsInList',
-    label: '隐藏未收藏演员的作品（标题近似匹配）',
+    label: '隐藏匹配演员全在黑名单中的作品',
+    description: '同时隐藏列表页有演员信息但本地无演员记录的作品。本地演员库暂不区分收藏/未收藏',
   },
   {
     key: 'hideUnrecognizedActorsInList',
     id: 'hideUnrecognizedActorsInList',
     label: '隐藏无法识别演员的作品',
     description: '仅在本地演员库可用时生效；本地演员库为空时不隐藏。默认关闭',
-  },
-  {
-    key: 'treatSubscribedAsFavorited',
-    id: 'treatSubscribedAsFavorited',
-    label: '订阅视为收藏',
-    description: '本地演员库暂不区分收藏/订阅状态，此开关当前不生效',
   },
 ];

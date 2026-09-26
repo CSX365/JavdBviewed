@@ -266,7 +266,10 @@ async function initialize(): Promise<void> {
     if (settings.userExperience.enableAnchorOptimization) {
         preregisterBlueprints.push({ phase: 'deferred', label: 'anchorOptimization:init' });
     }
-    if (settings.userExperience.enableListEnhancement !== false && !isVideoPage && !isActorPage) {
+    // 注意：与下方实际注册保持一致——listEnhancement 作用域为「除 video 页外」，
+    // 含演员页（2026-09-27 真机审计 B5 修复：原 blueprint 误排除演员页，与实际注册矛盾；
+    // 演员页 40/40 真机行为为基线，不得反向改行为）。
+    if (settings.userExperience.enableListEnhancement !== false && !isVideoPage) {
         preregisterBlueprints.push(
             { phase: 'high', label: 'listEnhancement:init', priority: 7, visibilityPolicy: 'background_allowed' },
         );
@@ -541,7 +544,6 @@ async function initialize(): Promise<void> {
             hideBlacklistedActorsInList: (settings.listEnhancement as any)?.hideBlacklistedActorsInList === true,
             hideNonFavoritedActorsInList: (settings.listEnhancement as any)?.hideNonFavoritedActorsInList === true,
             hideUnrecognizedActorsInList: (settings.listEnhancement as any)?.hideUnrecognizedActorsInList === true, // 默认false（空演员库保护）
-            treatSubscribedAsFavorited: (settings.listEnhancement as any)?.treatSubscribedAsFavorited !== false,
             enableActorPenetration: (settings.listEnhancement as any)?.enableActorPenetration === true,
             enableActorNameMarks: isVideoEnhancementSubOn(settings, 'enableActorNameMarks'),
             // 高质量封面：列表路径已弃用（JavDB 默认高清）；固定 false，配置字段仅兼容存储

@@ -16,12 +16,16 @@ export interface ActorPenetrationCacheValue {
 
 export type ActorPenetrationCacheResult =
   | { status: 'hit'; value: ActorPenetrationCacheValue }
-  | { status: 'failed' }   // 失败短缓存有效期内：抑制重试
+  | { status: 'failed'; loginRequired?: boolean }   // 失败短缓存有效期内：抑制重试
   | { status: 'miss' };
 
 const KEY_PREFIX = 'actorPenetration:';
 const SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
 const FAILURE_TTL_MS = 10 * 60 * 1000; // 10 分钟
+// 「需登录」独立状态（09-26-display-settings-audit B7）：登录受限番 302→登录页，
+// 与网络失败分开标记，避免真实状态被混淆；TTL 取 1 小时——比 10 分钟抑制
+// 请求风暴，又不至于用户登录后长期看不到穿透行。
+const LOGIN_REQUIRED_TTL_MS = 60 * 60 * 1000; // 1 小时
 const FAILURE_SENTINEL = { actors: [] as DetailActor[], hasMore: false, fetchedAt: 0 };
 
 /** 把番号规范化成缓存键（小写、去空白）。 */
@@ -32,14 +36,14 @@ export function normalizeCodeKey(code: string): string {
 /**
  * 读取缓存：
  * - hit：成功结果未过期
- * - failed：失败短缓存有效期内（抑制重试）
+ * - failed：失败短缓存有效期内（抑制重试）；loginRequired 标记「需登录」独立状态
  * - miss：无记录或已过期（可发起请求）
  */
 export async function readActorPenetrationCache(code: string): Promise<ActorPenetrationCacheResult> {
   const key = KEY_PREFIX + normalizeCodeKey(code);
-  const entry = await globalCache.get<{ failed?: boolean } & ActorPenetrationCacheValue>(key).catch(() => null);
+  const entry = await globalCache.get<{ failed?: boolean; loginRequired?: boolean } & ActorPenetrationCacheValue>(key).catch(() => null);
   if (!entry) return { status: 'miss' };
-  if (entry.failed) return { status: 'failed' };
+  if (entry.failed) return { status: 'failed', loginRequired: entry.loginRequired === true };
   return { status: 'hit', value: { actors: entry.actors, hasMore: entry.hasMore, fetchedAt: entry.fetchedAt } };
 }
 
@@ -56,4 +60,10 @@ export async function writeActorPenetrationSuccess(
 export async function writeActorPenetrationFailure(code: string): Promise<void> {
   const key = KEY_PREFIX + normalizeCodeKey(code);
   await globalCache.set(key, { failed: true, ...FAILURE_SENTINEL }, FAILURE_TTL_MS).catch(() => undefined);
+}
+
+/** 写入「需登录」缓存（1 小时 TTL）：详情 302 到登录页的独立状态，不与网络失败混用。 */
+export async function writeActorPenetrationLoginRequired(code: string): Promise<void> {
+  const key = KEY_PREFIX + normalizeCodeKey(code);
+  await globalCache.set(key, { failed: true, loginRequired: true, ...FAILURE_SENTINEL }, LOGIN_REQUIRED_TTL_MS).catch(() => undefined);
 }

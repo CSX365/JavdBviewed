@@ -960,7 +960,8 @@ export class EnhancementSettings extends BaseSettingsPanel {
             });
             STATE.settings = newSettings;
 
-            // 通知所有JavDB标签页设置已更新（兼容大小写类型）
+            // 通知所有JavDB标签页设置已更新：统一小写 settings-updated（带 payload，
+            // 内容主路由可识别；大写 SETTINGS_UPDATED 冗余双发已移除，2026-09-27 审计 B6）
             chrome.tabs.query({ url: '*://javdb.com/*' }, (tabs) => {
                 tabs.forEach(tab => {
                     if (tab.id) {
@@ -969,14 +970,6 @@ export class EnhancementSettings extends BaseSettingsPanel {
                             chrome.tabs.sendMessage(tab.id, { type: 'settings-updated', settings: newSettings }, () => {
                                 if (chrome.runtime.lastError) {
                                     console.debug('[Enhancement] settings-updated skipped:', { tabId: tab.id, error: chrome.runtime.lastError.message });
-                                }
-                            });
-                        } catch {}
-                        try {
-                            console.log('[Enhancement] Broadcasting SETTINGS_UPDATED to tab:', { tabId: tab.id, url: tab.url });
-                            chrome.tabs.sendMessage(tab.id, { type: 'SETTINGS_UPDATED', settings: newSettings }, () => {
-                                if (chrome.runtime.lastError) {
-                                    console.debug('[Enhancement] SETTINGS_UPDATED skipped:', { tabId: tab.id, error: chrome.runtime.lastError.message });
                                 }
                             });
                         } catch {}

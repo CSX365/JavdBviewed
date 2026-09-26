@@ -21,7 +21,6 @@ export class DisplaySettings extends BaseSettingsPanel {
     private hideBlacklistedActorsInListCheckbox: HTMLInputElement | null = null;
     private hideNonFavoritedActorsInListCheckbox: HTMLInputElement | null = null;
     private hideUnrecognizedActorsInListCheckbox: HTMLInputElement | null = null;
-    private treatSubscribedAsFavoritedCheckbox: HTMLInputElement | null = null;
 
     constructor() {
         super({
@@ -45,7 +44,6 @@ export class DisplaySettings extends BaseSettingsPanel {
         this.hideBlacklistedActorsInListCheckbox = document.getElementById('hideBlacklistedActorsInList') as HTMLInputElement | null;
         this.hideNonFavoritedActorsInListCheckbox = document.getElementById('hideNonFavoritedActorsInList') as HTMLInputElement | null;
         this.hideUnrecognizedActorsInListCheckbox = document.getElementById('hideUnrecognizedActorsInList') as HTMLInputElement | null;
-        this.treatSubscribedAsFavoritedCheckbox = document.getElementById('treatSubscribedAsFavorited') as HTMLInputElement | null;
 
         if (!this.hideViewedCheckbox || !this.hideBrowsedCheckbox || !this.hideVRCheckbox || !this.hideWantCheckbox) {
             throw new Error('显示设置相关的DOM元素未找到');
@@ -66,7 +64,6 @@ export class DisplaySettings extends BaseSettingsPanel {
         this.hideBlacklistedActorsInListCheckbox?.addEventListener('change', this.handleSettingChange.bind(this), { signal });
         this.hideNonFavoritedActorsInListCheckbox?.addEventListener('change', this.handleSettingChange.bind(this), { signal });
         this.hideUnrecognizedActorsInListCheckbox?.addEventListener('change', this.handleSettingChange.bind(this), { signal });
-        this.treatSubscribedAsFavoritedCheckbox?.addEventListener('change', this.handleSettingChange.bind(this), { signal });
     }
 
     /**
@@ -99,10 +96,6 @@ export class DisplaySettings extends BaseSettingsPanel {
             // 默认 true（若未配置）
             this.hideUnrecognizedActorsInListCheckbox.checked = listEnhancement.hideUnrecognizedActorsInList !== false;
         }
-        if (this.treatSubscribedAsFavoritedCheckbox) {
-            // 默认 true（若未配置）
-            this.treatSubscribedAsFavoritedCheckbox.checked = listEnhancement.treatSubscribedAsFavorited !== false;
-        }
     }
 
     /**
@@ -115,7 +108,6 @@ export class DisplaySettings extends BaseSettingsPanel {
             if (this.hideBlacklistedActorsInListCheckbox) newListEnh.hideBlacklistedActorsInList = this.hideBlacklistedActorsInListCheckbox.checked;
             if (this.hideNonFavoritedActorsInListCheckbox) newListEnh.hideNonFavoritedActorsInList = this.hideNonFavoritedActorsInListCheckbox.checked;
             if (this.hideUnrecognizedActorsInListCheckbox) newListEnh.hideUnrecognizedActorsInList = this.hideUnrecognizedActorsInListCheckbox.checked;
-            if (this.treatSubscribedAsFavoritedCheckbox) newListEnh.treatSubscribedAsFavorited = this.treatSubscribedAsFavoritedCheckbox.checked;
 
             const newSettings: ExtensionSettings = {
                 ...current,
@@ -181,7 +173,6 @@ export class DisplaySettings extends BaseSettingsPanel {
         if (this.hideBlacklistedActorsInListCheckbox) le.hideBlacklistedActorsInList = this.hideBlacklistedActorsInListCheckbox.checked;
         if (this.hideNonFavoritedActorsInListCheckbox) le.hideNonFavoritedActorsInList = this.hideNonFavoritedActorsInListCheckbox.checked;
         if (this.hideUnrecognizedActorsInListCheckbox) le.hideUnrecognizedActorsInList = this.hideUnrecognizedActorsInListCheckbox.checked;
-        if (this.treatSubscribedAsFavoritedCheckbox) le.treatSubscribedAsFavorited = this.treatSubscribedAsFavoritedCheckbox.checked;
         if (Object.keys(le).length > 0) (out as any).listEnhancement = le;
         return out;
     }
@@ -214,9 +205,6 @@ export class DisplaySettings extends BaseSettingsPanel {
         }
         if (this.hideUnrecognizedActorsInListCheckbox && le.hideUnrecognizedActorsInList !== undefined) {
             this.hideUnrecognizedActorsInListCheckbox.checked = !!le.hideUnrecognizedActorsInList;
-        }
-        if (this.treatSubscribedAsFavoritedCheckbox && le.treatSubscribedAsFavorited !== undefined) {
-            this.treatSubscribedAsFavoritedCheckbox.checked = !!le.treatSubscribedAsFavorited;
         }
     }
 

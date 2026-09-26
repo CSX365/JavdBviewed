@@ -231,7 +231,6 @@ function buildActorAuditSettings(defaultTags: string[]): Record<string, unknown>
       hideBlacklistedActorsInList: false,
       hideNonFavoritedActorsInList: false,
       hideUnrecognizedActorsInList: false,
-      treatSubscribedAsFavorited: true,
       listDisplayControl: {
         enabled: false,
         columnCount: 4,

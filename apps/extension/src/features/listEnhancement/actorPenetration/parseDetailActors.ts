@@ -22,7 +22,9 @@ const GENDER_SYMBOL_STRIP = /[\u2640\u2642♀♂]/g;
 /**
  * 解析详情页文档，返回所有演员（含性别）。
  * 支持两种常见 JAVDB 详情面板结构：
- *  - 标签为「演員/演员」(female 默认) 与「男優/男优」(male 默认) 的面板；
+ *  - 标签为「演員/演员/Actor(s)/Actress」(female 默认) 与
+ *    「男優/男优/Male Actor(s)」(male 默认) 的面板（镜像按 Accept-Language
+ *    返回不同语言页面，英文标签兼容见 09-26-display-settings-audit B7）；
  *  - 面板内含 `.symbol.female` / `.symbol.male` 图标紧邻演员链接。
  * 未识别性别标记的链接按 unknown 处理。
  */
@@ -35,10 +37,11 @@ export function parseDetailActors(doc: Document): DetailActor[] {
     const label = strong?.textContent || '';
 
     let defaultGender: ActorGender = 'unknown';
-    if (/演員|演员/.test(label)) {
-      defaultGender = 'female';
-    } else if (/男優|男优/.test(label)) {
+    // 必须先判 male：英文「Male Actor(s)」包含「Actor」子串，顺序颠倒会误判性别
+    if (/男優|男优/i.test(label) || /male\s+actor/i.test(label)) {
       defaultGender = 'male';
+    } else if (/演員|演员/i.test(label) || /actress/i.test(label) || /actor/i.test(label)) {
+      defaultGender = 'female';
     } else {
       return; // 非演员面板，跳过
     }

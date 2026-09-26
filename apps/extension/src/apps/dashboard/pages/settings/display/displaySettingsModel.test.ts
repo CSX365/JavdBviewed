@@ -12,7 +12,7 @@ import {
 } from './displaySettingsModel';
 
 describe('displaySettingsModel', () => {
-  it('defaults: display false, blacklisted/nonFavorited false, unrecognized off, subscribed true', () => {
+  it('defaults: display false, blacklisted/nonFavorited false, unrecognized off', () => {
     expect(DEFAULT_DISPLAY_SETTINGS_FORM).toEqual({
       hideViewed: false,
       hideBrowsed: false,
@@ -21,7 +21,6 @@ describe('displaySettingsModel', () => {
       hideBlacklistedActorsInList: false,
       hideNonFavoritedActorsInList: false,
       hideUnrecognizedActorsInList: false,
-      treatSubscribedAsFavorited: true,
       enableActorPenetration: false,
     });
   });
@@ -46,7 +45,6 @@ describe('displaySettingsModel', () => {
         hideBlacklistedActorsInList: true,
         hideNonFavoritedActorsInList: true,
         hideUnrecognizedActorsInList: false,
-        treatSubscribedAsFavorited: false,
         enableActorPenetration: true,
       } as any,
     });
@@ -58,19 +56,17 @@ describe('displaySettingsModel', () => {
       hideBlacklistedActorsInList: true,
       hideNonFavoritedActorsInList: true,
       hideUnrecognizedActorsInList: false,
-      treatSubscribedAsFavorited: false,
       enableActorPenetration: true,
     });
   });
 
-  it('treats undefined hideUnrecognized as false / treatSubscribed as true', () => {
+  it('treats undefined hideUnrecognized as false', () => {
     const form = mapSettingsToDisplayForm({
       listEnhancement: {
         hideBlacklistedActorsInList: true,
       },
     });
     expect(form.hideUnrecognizedActorsInList).toBe(false);
-    expect(form.treatSubscribedAsFavorited).toBe(true);
     expect(form.hideBlacklistedActorsInList).toBe(true);
   });
 
