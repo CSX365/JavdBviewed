@@ -45,7 +45,6 @@ function createHost(): Record<string, unknown> {
     magnetSourceBtsow: checkbox(true),
     magnetSourceTorrentz2: checkbox(),
     magnetSourceJavbus: checkbox(),
-    magnetBlockMojContent: checkbox(true),
     magnetAutoSearch: checkbox(),
     magnetSortMode: select(),
     renderFilterRules: () => {},
@@ -116,9 +115,7 @@ describe('magnet sort settings', () => {
     (host.magnetSortMode as HTMLSelectElement).dispatchEvent(new Event('change'));
     (host.magnetAutoSearch as HTMLInputElement).checked = true;
     (host.magnetAutoSearch as HTMLInputElement).dispatchEvent(new Event('change'));
-    (host.magnetBlockMojContent as HTMLInputElement).checked = false;
-    (host.magnetBlockMojContent as HTMLInputElement).dispatchEvent(new Event('change'));
 
-    expect(host.handleSettingChange).toHaveBeenCalledTimes(3);
+    expect(host.handleSettingChange).toHaveBeenCalledTimes(2);
   });
 });

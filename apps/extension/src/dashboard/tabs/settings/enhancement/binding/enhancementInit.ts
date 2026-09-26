@@ -27,7 +27,6 @@ export function initializeElements(host: EnhancementInitHost): void {
     ['magnetSourceBtsow', 'magnetSourceBtsow'],
     ['magnetSourceTorrentz2', 'magnetSourceTorrentz2'],
     ['magnetSourceJavbus', 'magnetSourceJavbus'],
-    ['magnetBlockMojContent', 'magnetBlockMojContent'],
     ['magnetAutoSearch', 'magnetAutoSearch'],
     ['magnetSortMode', 'magnetSortMode'],
     ['anchorButtonPosition', 'anchorButtonPosition'],

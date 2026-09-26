@@ -95,6 +95,33 @@ describe('enhancementSettingsModel', () => {
     });
   });
 
+  it('round-trips site ad removal switches, defaulting on for legacy data without the key', () => {
+    // 存量数据无 siteAdRemoval 键 → 默认开（产品意图去广告）
+    expect(mapSettingsToEnhancementForm({ magnetSearch: { blockMojContent: true } } as any)).toMatchObject({
+      siteAdRemovalEnabled: true,
+      siteAdRemovalRemovePromoButtons: true,
+      siteAdRemovalRemoveExtraAds: false,
+    });
+
+    const form = {
+      ...DEFAULT_ENHANCEMENT_SETTINGS_FORM,
+      siteAdRemovalEnabled: false,
+      siteAdRemovalRemovePromoButtons: true,
+      siteAdRemovalRemoveExtraAds: true,
+    };
+    const next = applyEnhancementFormToSettings({} as any, form);
+    expect(next.siteAdRemoval).toEqual({
+      enabled: false,
+      removePromoButtons: true,
+      removeExtraAds: true,
+    });
+    expect(mapSettingsToEnhancementForm(next)).toMatchObject({
+      siteAdRemovalEnabled: false,
+      siteAdRemovalRemovePromoButtons: true,
+      siteAdRemovalRemoveExtraAds: true,
+    });
+  });
+
   it('maps nested listEnhancement / videoEnhancement / magnetSearch', () => {
     const form = mapSettingsToEnhancementForm({
       userExperience: {
@@ -235,6 +262,10 @@ describe('enhancementSettingsModel', () => {
     expect(form.magnetSourceTorrentz2).toBe(true);
     expect(form.magnetAutoSearch).toBe(true);
     expect(form.magnetSortMode).toBe('quality');
+    // 去广告已与磁力解耦：旧 magnetSearch.blockMojContent 不得影响新开关
+    expect(form.siteAdRemovalEnabled).toBe(true);
+    expect(form.siteAdRemovalRemovePromoButtons).toBe(true);
+    expect(form.siteAdRemovalRemoveExtraAds).toBe(false);
     expect(form.magnetPageMaxConcurrentRequests).toBe(3);
     expect(form.enableActorEnhancement).toBe(false);
     expect(form.actorDefaultTags).toEqual(['s', 'c']);
