@@ -251,6 +251,24 @@
   color: #fca5a5;
 }
 
+/* 连接类失败块：服务器不可达（超时/网络不通）时的明确提示 + 操作 */
+.ml-detail-failure {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(252, 165, 165, 0.35);
+  border-radius: 6px;
+  background: rgba(252, 165, 165, 0.08);
+}
+
+.ml-detail-failure .ml-detail-error {
+  margin: 0 0 6px;
+}
+
+.ml-detail-failure-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .ml-detail-tagline {
   margin: 0 0 8px;
   font-size: 13px;

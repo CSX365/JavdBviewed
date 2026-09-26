@@ -33,7 +33,11 @@
 
 .ui-media-player__close-fab {
   position: absolute;
-  z-index: 50;
+  /* 必须高于 ArtPlayer 内部所有常态层：其内部 z-index 表为
+     loading=70 / settings=90 / info=100（.art-contextmenus=120 为右键瞬时菜单，
+     .art-mini-popup=9999 为小窗瞬态，均允许临时盖过），取 110 保证
+     loading/转圈态关闭入口可见可点（R2） */
+  z-index: 110;
   top: 12px;
   right: 12px;
   width: 36px;

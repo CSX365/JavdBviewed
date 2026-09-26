@@ -79,6 +79,11 @@ function formatMinutesText(value?: string): string {
   return /\u5206\u949f|\u5206|minute|min/i.test(text) ? text : `${text} \u5206\u949f`;
 }
 
+/** 连接类失败（服务器不可达/超时）：重试有意义；非连接类失败保留「（仍可播放）」直链兜底提示 */
+function isConnectionError(message: string): boolean {
+  return /连接超时|Failed to fetch|NetworkError|Load failed|ERR_[A-Z_]+/i.test(message);
+}
+
 /**
  * 本地详情弹窗内容：先用列表缓存，再拉 Emby 完整 Item 字段
  */
@@ -93,6 +98,7 @@ export const MediaItemDetailPanel = memo(function MediaItemDetailPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [detail, setDetail] = useState<EmbyItemDetailView | null>(null);
+  const [detailRetryNonce, setDetailRetryNonce] = useState(0);
   const [playedBusy, setPlayedBusy] = useState(false);
   const [playedLocal, setPlayedLocal] = useState<boolean | null>(null);
   const [nfo115, setNfo115] = useState<MediaBrowseItem['nfoSummary'] | null>(
@@ -194,7 +200,7 @@ export const MediaItemDetailPanel = memo(function MediaItemDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [detailItemId, detailServerUrl, detailServerId, detailSource]);
+  }, [detailItemId, detailServerUrl, detailServerId, detailSource, detailRetryNonce]);
 
   // 115 条目：懒下载解析 NFO 正文，填充标题/年份/简介（Emby 详情走服务器，115 需自行解析）
   useEffect(() => {
@@ -561,7 +567,30 @@ export const MediaItemDetailPanel = memo(function MediaItemDetailPanel({
           </div>
 
           {loading ? <p className="ml-detail-status">正在从媒体服务器拉取详情…</p> : null}
-          {error ? <p className="ml-detail-error">{error}（仍可播放）</p> : null}
+          {error && isConnectionError(error) ? (
+            <div className="ml-detail-failure" role="alert">
+              <p className="ml-detail-error">
+                无法连接媒体服务器（{error}）。服务器可能离线或网络不通，请稍后重试。
+              </p>
+              <div className="ml-detail-failure-actions">
+                <button
+                  type="button"
+                  className="ml-detail-btn"
+                  onClick={() => setDetailRetryNonce((n) => n + 1)}
+                >
+                  重试
+                </button>
+                {onClose ? (
+                  <button type="button" className="ml-detail-btn" onClick={onClose}>
+                    关闭
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {error && !isConnectionError(error) ? (
+            <p className="ml-detail-error">{error}（仍可播放）</p>
+          ) : null}
 
           {detail?.tagline || (is115Detail ? nfo115?.tagline : '') ? (
             <p className="ml-detail-tagline">{detail?.tagline || (is115Detail ? nfo115?.tagline : '')}</p>
