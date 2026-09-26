@@ -23,7 +23,7 @@ export const REACT_FULL_SETTINGS_PAGE_IDS = new Set<string>([
   // 功能增强设置使用 React 页面，保留原功能卡片的视觉与交互语义
   'enhancement-settings',
   // W4.6 第一批：已有 React 实现，完成路由接入后启用
-  'display-settings',
+  // （display-settings 已于 2026-09-27 IA 裁决整体迁入 enhancement-settings/list，从名单移除）
   'search-engine-settings',
   'ai-settings',
   'privacy-settings',

@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const settingsRoot = join(here, '..');
 const pageFiles = [
-  'display/DisplaySettingsPage.tsx',
+  // display/DisplaySettingsPage.tsx 已随 2026-09-27 IA 裁决删除（整页迁入 enhancement ListTab）
   'searchEngine/SearchEngineSettingsPage.tsx',
   'ai/AISettingsPage.tsx',
   'privacy/PrivacySettingsPage.tsx',

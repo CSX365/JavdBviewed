@@ -26,6 +26,17 @@ export async function mountTabIfNeeded(tabId: string): Promise<void> {
           unmountSettingsIndexPage('#tab-settings');
         } catch {}
 
+        // 2026-09-27 IA 裁决：显示设置页已整体迁入功能增强 · 列表页增强（ListTab）。
+        // 旧 hash 静默重定向（replaceState 不触发 hashchange，无二次激活竞态）。
+        // 注意：必须在 isReactFullSettingsPage 判定之前，display-settings 已不在 React 全页名单。
+        if (subSection === 'display-settings') {
+          history.replaceState(null, '', '#tab-settings/enhancement-settings/list');
+          const { mountEnhancementSettingsPage } = await import('../../apps/dashboard/pages/settings/enhancement/mountEnhancementSettingsPage');
+          mountEnhancementSettingsPage('#tab-settings');
+          console.debug('[mount] 设置子页：display-settings 已迁移，重定向至 enhancement-settings/list');
+          return;
+        }
+
         // 完整 React 内容页（如 Cloud）：无遗留 partial，直接挂载
         try {
           const { isReactFullSettingsPage } = await import('../../apps/dashboard/pages/settings/shared/reactFullPageIds');
@@ -65,12 +76,6 @@ export async function mountTabIfNeeded(tabId: string): Promise<void> {
               const { mountEnhancementSettingsPage } = await import('../../apps/dashboard/pages/settings/enhancement/mountEnhancementSettingsPage');
               mountEnhancementSettingsPage('#tab-settings');
               console.debug('[mount] 设置子页：React 全页 enhancement-settings');
-              return;
-            }
-            if (subSection === 'display-settings') {
-              const { mountDisplaySettingsPage } = await import('../../apps/dashboard/pages/settings/display/mountDisplaySettingsPage');
-              mountDisplaySettingsPage('#tab-settings');
-              console.debug('[mount] 设置子页：React 全页 display-settings');
               return;
             }
             if (subSection === 'search-engine-settings') {

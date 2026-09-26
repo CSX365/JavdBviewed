@@ -26,7 +26,7 @@ describe('React settings shared fidelity', () => {
     // id="..."> wrapper, so the shared shell keys the per-page cues on the stable
     // React mount marker (data-<page>-react) instead of the legacy element id.
     for (const marker of [
-      '[data-display-settings-react=\'1\']',
+      // display-settings 已随 2026-09-27 IA 裁决迁入 enhancement-settings/list，其 React 标记规则移除
       '[data-search-engine-settings-react=\'1\']',
       '[data-ai-settings-react=\'1\']',
       '[data-privacy-settings-react=\'1\']',
@@ -48,7 +48,7 @@ describe('React settings shared fidelity', () => {
 
   it('restores legacy page colour washes and emoji title markers', () => {
     for (const [marker, emoji] of [
-      ['#display-settings', '🎨'],
+      // （#display-settings '🎨' 已随 IA 迁移移除）
       ['#search-engine-settings', '🔍'],
       ['#ai-settings', '🤖'],
       ['#privacy-settings', '🔒'],

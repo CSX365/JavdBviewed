@@ -98,13 +98,7 @@ export const TAB_PARTIALS: Partial<Record<string, TabPartialResource>> = {
     ],
   },
   // 设置子页面
-  'tab-settings-display': {
-    name: 'tabs/settings-display.html',
-    styles: [
-      './styles/05-pages/settings/settings.css',
-      './styles/05-pages/settings/display.css',
-    ],
-  },
+  // （tab-settings-display 已随 2026-09-27 IA 裁决删除：显示设置迁入 enhancement-settings/list）
   'tab-settings-enhancement': {
     name: 'tabs/settings-enhancement.html',
     styles: [

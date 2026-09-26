@@ -14,7 +14,7 @@
 @import url('./drive115.css');
 
 /* 子设置面板样式 */
-@import url('./display.css');
+/* display.css 已随 2026-09-27 IA 裁决删除（显示设置迁入 enhancement-settings/list） */
 @import url('./searchEngine.css');
 @import url('./webdav.css');
 @import url('./sync.css');

@@ -80,7 +80,6 @@ export async function initAllSettingsPanels(): Promise<void> {
         console.log('[Settings] 开始初始化模块化设置系统...');
 
         const { settingsPanelManager } = await import('./base/SettingsPanelManager');
-        const { getDisplaySettings } = await import('./display');
         const { getSearchEngineSettings } = await import('./searchEngine');
         const { getWebdavSettings } = await import('./webdav');
         const { getSyncSettings } = await import('./sync');
@@ -97,8 +96,7 @@ export async function initAllSettingsPanels(): Promise<void> {
         const { getUpdateSettings } = await import('./update');
 
         // 注册所有设置面板
-        // 所有12个主要设置模块都已完成迁移！
-        settingsPanelManager.registerPanel(await getDisplaySettings());
+        // 所有主要设置模块都已完成迁移！（display-settings 已于 2026-09-27 迁入 enhancement-settings/list，面板注册移除）
         settingsPanelManager.registerPanel(await getSearchEngineSettings());
         settingsPanelManager.registerPanel(await getWebdavSettings());
         settingsPanelManager.registerPanel(await getSyncSettings());
@@ -193,10 +191,6 @@ export async function initSettingsPage(): Promise<void> {
 
         // 壳 + partial：初始化对应遗留设置面板（保留原交互/弹窗）
         const moduleMap: Record<string, () => Promise<void>> = {
-            'display-settings': async () => {
-                const { getDisplaySettings } = await import('./display');
-                (await getDisplaySettings()).init();
-            },
             'ai-settings': async () => {
                 const { getAiSettings } = await import('./ai');
                 (await getAiSettings()).init();
@@ -312,10 +306,6 @@ export async function initSettingsTab(): Promise<void> {
 
         // 壳 + partial：初始化对应遗留面板
         const moduleMap: Record<string, () => Promise<void>> = {
-            'display-settings': async () => {
-                const { getDisplaySettings } = await import('./display');
-                (await getDisplaySettings()).init();
-            },
             'ai-settings': async () => {
                 const { getAiSettings } = await import('./ai');
                 (await getAiSettings()).init();
