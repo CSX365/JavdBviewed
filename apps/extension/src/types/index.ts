@@ -228,6 +228,16 @@ export interface SiteAppearanceSettings {
   autoExpandReplaceTip: boolean;
 }
 
+/** 去除原站广告设置（独立增强功能，与磁力搜索解耦）。 */
+export interface SiteAdRemovalSettings {
+  /** 主开关：隐藏原站推广位（.moj-content 等）。默认开。 */
+  enabled: boolean;
+  /** 移除「官方App / JavDB公告(Telegram)」推广按钮。默认开（保持历史 always-on 行为）。 */
+  removePromoButtons: boolean;
+  /** 额外广告位：.sub-header 顶部广告栏 / .app-desktop-banner 桌面App推广位。默认关。 */
+  removeExtraAds: boolean;
+}
+
 /** 扩展设置（占位类型，实际定义在各个模块中） */
 export interface ExtensionSettings {
   [key: string]: any;

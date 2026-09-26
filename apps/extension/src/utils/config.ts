@@ -521,6 +521,13 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
         },
     },
 
+    // 去除原站广告默认配置（独立增强功能，与磁力搜索解耦）
+    siteAdRemoval: {
+        enabled: true, // 默认开：主开关（保持 blockMojContent 原默认 true 的产品意图）
+        removePromoButtons: true, // 官方App/Telegram 推广按钮移除（保持历史 always-on）
+        removeExtraAds: false, // 额外广告位（.sub-header/.app-desktop-banner），新增能力默认关
+    },
+
     // 新增：影片页增强默认配置
     videoEnhancement: {
         // 主开关 = 「详情页 UI 增强」总闸（默认开，见 videoEnhancementGate.ts 规范化约定）；
@@ -729,6 +736,13 @@ export function isEmbyLibraryEnabled(emby: EmbyConfigLike | null | undefined): b
     if ('libraryEnabled' in emby) return emby.libraryEnabled === true;
     // 旧数据（未经过 mergeSettings 迁移的裸读点）：enabled 总闸 + libraryStatus.enabled 入库主闸
     return emby.enabled === true && (emby as any).libraryStatus?.enabled === true;
+}
+
+/** 去除原站广告主开关是否开启（默认开，null 安全）。 */
+export function isSiteAdRemovalOn(
+    settings: { siteAdRemoval?: { enabled?: unknown } | null } | null | undefined,
+): boolean {
+    return settings?.siteAdRemoval?.enabled !== false;
 }
 
 // WebDAV恢复配置

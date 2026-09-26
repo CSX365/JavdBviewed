@@ -106,6 +106,14 @@ describe('EnhancementSettingsPage layout', () => {
     expect(pageSource).toContain('siteAppearanceAutoExpandReplaceTip');
   });
 
+  it('keeps the site ad removal section independent from magnet search', () => {
+    expect(pageSource).toContain('title="去除原站广告"');
+    expect(pageSource).toContain('id="siteAdRemovalEnabled"');
+    expect(pageSource).toContain('id="siteAdRemovalRemovePromoButtons"');
+    expect(pageSource).toContain('id="siteAdRemovalRemoveExtraAds"');
+    expect(pageSource).not.toContain('magnetBlockMojContent');
+  });
+
   it('keeps the loaded-content limit warning on list sorting', () => {
     expect(pageSource).toContain('list-sorting-warning');
     expect(pageSource).toContain('只包含当前页面已显示的影片');

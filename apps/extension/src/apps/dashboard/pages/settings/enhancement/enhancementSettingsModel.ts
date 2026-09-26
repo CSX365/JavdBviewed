@@ -104,7 +104,9 @@ export type EnhancementSettingsFormState = {
   magnetSourceBtsow: boolean;
   magnetSourceTorrentz2: boolean;
   magnetSourceJavbus: boolean;
-  magnetBlockMojContent: boolean;
+  siteAdRemovalEnabled: boolean;
+  siteAdRemovalRemovePromoButtons: boolean;
+  siteAdRemovalRemoveExtraAds: boolean;
   magnetAutoSearch: boolean;
   magnetSortMode: MagnetSortMode;
   magnetPageMaxConcurrentRequests: number;
@@ -319,7 +321,9 @@ export const DEFAULT_ENHANCEMENT_SETTINGS_FORM: EnhancementSettingsFormState = {
   magnetSourceBtsow: true,
   magnetSourceTorrentz2: false,
   magnetSourceJavbus: false,
-  magnetBlockMojContent: true,
+  siteAdRemovalEnabled: true,
+  siteAdRemovalRemovePromoButtons: true,
+  siteAdRemovalRemoveExtraAds: false,
   magnetAutoSearch: false,
   magnetSortMode: 'default',
   magnetPageMaxConcurrentRequests: 2,
@@ -465,6 +469,7 @@ export function mapSettingsToEnhancementForm(
   const tr = s.translation || {};
   const ae = s.actorEnhancement || {};
   const ms = s.magnetSearch || {};
+  const sa = s.siteAdRemoval || {};
   const msSources = ms.sources || {};
   const cc = ms.concurrency || {};
   const ao = s.anchorOptimization || {};
@@ -589,7 +594,9 @@ export function mapSettingsToEnhancementForm(
     magnetSourceBtsow: msSources.btsow !== false,
     magnetSourceTorrentz2: !!msSources.torrentz2,
     magnetSourceJavbus: !!msSources.javbus,
-    magnetBlockMojContent: ms.blockMojContent !== false,
+    siteAdRemovalEnabled: sa.enabled !== false,
+    siteAdRemovalRemovePromoButtons: sa.removePromoButtons !== false,
+    siteAdRemovalRemoveExtraAds: sa.removeExtraAds === true,
     magnetAutoSearch: ms.autoSearch === true,
     magnetSortMode: normalizeMagnetSortMode(ms.sortMode),
     magnetPageMaxConcurrentRequests: parseIntSafe(
@@ -688,7 +695,6 @@ export function applyEnhancementFormToSettings(
         javbus: form.magnetSourceJavbus,
         custom: Array.isArray(existingMs.sources?.custom) ? existingMs.sources.custom : [],
       },
-      blockMojContent: form.magnetBlockMojContent,
       autoSearch: form.magnetAutoSearch,
       sortMode: normalizeMagnetSortMode(form.magnetSortMode),
       maxResults: form.magnetMaxResults,
@@ -700,6 +706,11 @@ export function applyEnhancementFormToSettings(
         bgPerHostMaxConcurrent: form.magnetBgPerHostMaxConcurrent,
         bgPerHostRateLimitPerMin: form.magnetBgPerHostRateLimitPerMin,
       },
+    },
+    siteAdRemoval: {
+      enabled: form.siteAdRemovalEnabled,
+      removePromoButtons: form.siteAdRemovalRemovePromoButtons,
+      removeExtraAds: form.siteAdRemovalRemoveExtraAds,
     },
     dataEnhancement: {
       ...((current as any).dataEnhancement || {}),

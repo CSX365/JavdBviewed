@@ -45,29 +45,3 @@ export function injectNavbarBadge(): void {
     }
 }
 
-export function removeUnwantedButtons(): void {
-    try {
-        const appButtons = document.querySelectorAll('a[href*="app.javdb"], a[href*="t.me/javdbnews"]');
-        appButtons.forEach(button => {
-            if (button.textContent?.includes('官方App') ||
-                button.textContent?.includes('JavDB公告') ||
-                button.textContent?.includes('Telegram')) {
-                log(`Removing unwanted button: ${button.textContent}`);
-                button.remove();
-            }
-        });
-
-        const style = document.createElement('style');
-        style.textContent = `
-            a[href*="app.javdb"]:not([href*="javdb.com"]),
-            a[href*="t.me/javdbnews"] {
-                display: none !important;
-            }
-        `;
-        document.head.appendChild(style);
-
-        log('Unwanted buttons removal completed');
-    } catch (error) {
-        log('Error removing unwanted buttons:', error);
-    }
-}

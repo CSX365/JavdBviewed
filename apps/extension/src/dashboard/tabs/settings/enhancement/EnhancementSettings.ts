@@ -95,7 +95,6 @@ export class EnhancementSettings extends BaseSettingsPanel {
     private magnetSourceBtsow!: HTMLInputElement;
     private magnetSourceTorrentz2!: HTMLInputElement;
     private magnetSourceJavbus!: HTMLInputElement;
-    private magnetBlockMojContent!: HTMLInputElement;
     private magnetAutoSearch!: HTMLInputElement;
     private magnetSortMode: HTMLSelectElement | null = null;
     // 磁力搜索并发与限流配置
@@ -843,7 +842,6 @@ export class EnhancementSettings extends BaseSettingsPanel {
                         javbus: this.magnetSourceJavbus?.checked === true,
                         custom: [],
                     },
-                    blockMojContent: this.magnetBlockMojContent?.checked !== false,
                     autoSearch: this.magnetAutoSearch?.checked === true,
                     sortMode: normalizeMagnetSortMode(this.magnetSortMode?.value),
                     maxResults: (STATE.settings?.magnetSearch as any)?.maxResults ?? 15,

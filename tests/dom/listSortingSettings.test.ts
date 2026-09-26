@@ -47,7 +47,6 @@ function createHost(): Record<string, unknown> {
     magnetSourceBtsow: checkbox(true),
     magnetSourceTorrentz2: checkbox(),
     magnetSourceJavbus: checkbox(),
-    magnetBlockMojContent: checkbox(true),
     magnetAutoSearch: checkbox(),
     magnetSortMode: select(['default'], 'default'),
     enableListSorting: checkbox(),

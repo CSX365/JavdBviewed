@@ -29,7 +29,6 @@ export interface MagnetSearchConfig {
   showInlineResults: boolean;                         // 在页面内嵌显示结果
   showFloatingButton: boolean;                        // 显示悬浮搜索按钮
   autoSearch: boolean;                                // 进入详情页自动搜索
-  blockMojContent: boolean;                           // 屏蔽无码内容
   sources: {                                          // 各源的启用状态
     sukebei: boolean;
     btdig: boolean;

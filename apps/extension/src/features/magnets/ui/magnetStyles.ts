@@ -119,19 +119,6 @@ export function injectMagnetSourceTagStyles(): void {
       overflow: hidden !important;
       margin-bottom: 0 !important;
     }
-
-    .top-meta .moj-content.jdb-hidden-moj-content,
-    .top-meta .moj-content[style*="display: none"],
-    .top-meta .moj-content[style*="display:none"] {
-      width: 0 !important;
-      height: 0 !important;
-      min-width: 0 !important;
-      min-height: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      line-height: 0 !important;
-      overflow: hidden !important;
-    }
   `;
   document.head.appendChild(style);
 }
@@ -317,19 +304,6 @@ export function injectUnifiedMagnetListStyles(): void {
 
     .top-meta > .tags {
       margin-bottom: 0 !important;
-    }
-
-    .top-meta .moj-content.jdb-hidden-moj-content,
-    .top-meta .moj-content[style*="display: none"],
-    .top-meta .moj-content[style*="display:none"] {
-      width: 0 !important;
-      height: 0 !important;
-      min-width: 0 !important;
-      min-height: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      line-height: 0 !important;
-      overflow: hidden !important;
     }
 
     /* 恢复 Bulma 在该区域的负边距行为，避免列 padding 叠加导致超宽 */

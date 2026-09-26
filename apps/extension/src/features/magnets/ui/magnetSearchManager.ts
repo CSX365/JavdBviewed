@@ -108,7 +108,6 @@ export class MagnetSearchManager {
       showInlineResults: true,
       showFloatingButton: true,
       autoSearch: false,
-      blockMojContent: true,
       sources: {
         sukebei: true,
         btdig: true,
@@ -207,14 +206,6 @@ export class MagnetSearchManager {
 
       // 添加搜索源标签
       this.addSearchSourceTags();
-
-      // 屏蔽磁力区域广告
-      if (this.config.blockMojContent) {
-        document.querySelectorAll<HTMLElement>('.moj-content').forEach(el => {
-          el.classList.add('jdb-hidden-moj-content');
-          el.style.display = 'none';
-        });
-      }
 
       this.applyNativeMagnetPresentation();
 
