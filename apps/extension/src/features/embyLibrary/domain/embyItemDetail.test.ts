@@ -186,6 +186,63 @@ describe('fetchEmbyItemDetail parallel', () => {
     expect(urls.some((u) => u.includes('Fields=') && u.includes('Chapters'))).toBe(true);
   });
 
+  it('guards against missing credentials without sending any request', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    }) as Response);
+
+    const ret = await fetchEmbyItemDetail({
+      server: { url: 'http://emby.local:8096/', type: 'emby' as const, apiKey: '', accessToken: '' },
+      itemId: '1',
+      fetchImpl: fetchImpl as any,
+    });
+
+    expect(ret.success).toBe(false);
+    expect(ret.error).toContain('未配置凭据');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('401 with apiKey only suggests checking the key or logging in (not "re-login")', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    }) as Response);
+
+    const ret = await fetchEmbyItemDetail({
+      server: { url: 'http://emby.local:8096/', type: 'emby' as const, apiKey: 'k' },
+      itemId: '1',
+      fetchImpl: fetchImpl as any,
+    });
+
+    expect(ret.success).toBe(false);
+    expect(ret.error).toContain('请检查 API Key 是否有效');
+  });
+
+  it('401 with a user session suggests re-login', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    }) as Response);
+
+    const ret = await fetchEmbyItemDetail({
+      server: {
+        url: 'http://emby.local:8096/',
+        type: 'emby' as const,
+        accessToken: 't',
+        userId: 'u1',
+      },
+      itemId: '1',
+      fetchImpl: fetchImpl as any,
+    });
+
+    expect(ret.success).toBe(false);
+    expect(ret.error).toContain('用户令牌无效');
+  });
+
   it('skips collections when no userId', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       const u = String(url);

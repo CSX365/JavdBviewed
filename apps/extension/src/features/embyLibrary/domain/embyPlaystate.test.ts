@@ -159,3 +159,25 @@ describe('reportEmbyPlaybackProgress timeout', () => {
     expect(ret.success).toBe(false);
   });
 });
+
+describe('reportEmbyPlaybackProgress credential guard', () => {
+  it('reports an actionable credential error instead of opaque failure when nothing is configured', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const ret = await reportEmbyPlaybackProgress({
+      server: {
+        url: 'http://emby.local:8096',
+        type: 'emby' as const,
+        apiKey: '',
+        accessToken: '',
+        userId: '',
+      },
+      itemId: '1',
+      positionSeconds: 60,
+      fetchImpl,
+    });
+    expect(ret.success).toBe(false);
+    expect(ret.message).toContain('写回进度缺少可用凭据');
+    expect(ret.message).toContain('Emby 设置');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
