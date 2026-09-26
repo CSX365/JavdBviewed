@@ -6,6 +6,7 @@ import type { ExtensionSettings } from '../types';
 import { log } from './logController';
 import { dedupeSearchEngines, migrateSearchEngineTemplateIcon } from './searchEngines';
 import { applyEmbyDeletedServerTombstones } from '../shared/embyDeletedServers';
+import { backfillSiteAdRemovalSettings } from '../features/siteAdRemoval';
 import { createChromeStorage } from '../platform/storage/chromeStorage';
 
 const VIEWED_RECORDS_STORAGE_KEY = 'viewed';
@@ -344,6 +345,20 @@ export async function getSettings(): Promise<ExtensionSettings> {
     ) {
       embyAny.libraryEnabled = true;
       embyAny.enabled = !!(embyAny.recognitionEnabled || embyAny.libraryEnabled);
+    }
+  }
+
+  // 去除原站广告回填迁移（幂等）：
+  // 旧数据只有 magnetSearch.blockMojContent（挂磁力功能的子开关，磁力默认关时实际不生效）。
+  // 新模型提升为顶层 siteAdRemoval（主开关默认开，裁决 2026-09-26 方案 a）；
+  // 仅存量用户显式关过 blockMojContent（=== false）回填 enabled: false，其余回填 true。
+  {
+    const siteAdRemovalPatch = backfillSiteAdRemovalSettings(storedSettings as Record<string, unknown>);
+    if (siteAdRemovalPatch) {
+      (mergedSettings as any).siteAdRemoval = {
+        ...((mergedSettings as any).siteAdRemoval || {}),
+        ...siteAdRemovalPatch.siteAdRemoval,
+      };
     }
   }
 

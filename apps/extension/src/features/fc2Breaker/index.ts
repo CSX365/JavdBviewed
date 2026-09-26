@@ -911,7 +911,6 @@ export class FC2BreakerService {
           showInlineResults: false,
           showFloatingButton: false,
           autoSearch: false,
-          blockMojContent: false,
           sources: this.getFC2MagnetSearchSourcesConfig(),
           maxResults: this.getFC2MagnetMaxResults(),
           timeout: this.getFC2MagnetTimeout(),

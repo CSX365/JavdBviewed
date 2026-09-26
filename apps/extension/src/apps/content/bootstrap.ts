@@ -6,7 +6,7 @@
 // src/apps/content/bootstrap.ts
 
 import { getSettings, getValue } from '../../utils/storage';
-import { STORAGE_KEYS, isEmbyRecognitionEnabled } from '../../utils/config';
+import { STORAGE_KEYS, isEmbyRecognitionEnabled, isSiteAdRemovalOn } from '../../utils/config';
 import type { EmbyLibraryState } from '../../features/embyLibrary/types';
 import type { GlobalTaskVisibilityPolicy } from '../../shared/taskCenterTypes';
 import { STATE, SELECTORS, log, currentFaviconState, currentTitleStatus } from '../../features/contentState';
@@ -57,12 +57,13 @@ import { exposeContentDebugManagers, installContentLifecycleHandlers } from './c
 import { installContentMessageRouter } from './contentMessageRouter';
 import { installContentTelemetryErrorReporter } from './errorReporter';
 import { installOrchestratorStateBridge } from './orchestratorStateBridge';
-import { injectNavbarBadge, removeUnwantedButtons } from './pageChrome';
+import { injectNavbarBadge } from './pageChrome';
 import { getEffectiveEmbyMatchUrls, matchesEmbyUrlPattern } from '../../features/embyEnhancement/domain/matchUrls';
 import { shouldInstallStandaloneListObserver } from './listObserverPolicy';
 import { loadCurrentPageRecordState } from '../../features/contentState/recordCache';
 import { extractVideoIdFromPage } from '../../platform/browser';
 import { isJavdbAppearanceSupportedHost, siteAppearanceManager } from '../../features/siteAppearance';
+import { applySiteAdRemoval } from '../../features/siteAdRemoval';
 import {
     ContentScreenshotBlurController,
     getContentPageKind,
@@ -256,7 +257,9 @@ async function initialize(): Promise<void> {
     if (isSuperRankingSupportedHost() && (settings.userExperience as any).enableSuperRanking !== false) {
         preregisterBlueprints.push({ phase: 'critical', label: 'superRankingNav:init', priority: 9, visibilityPolicy: 'background_allowed' });
     }
-    preregisterBlueprints.push({ phase: 'high', label: 'ui:remove-unwanted', priority: 3, visibilityPolicy: (isVideoPage || isActorPage) ? 'background_allowed' : 'foreground_first' });
+    if (isSiteAdRemovalOn(settings)) {
+        preregisterBlueprints.push({ phase: 'high', label: 'ui:site-ad-removal', priority: 3, visibilityPolicy: (isVideoPage || isActorPage) ? 'background_allowed' : 'foreground_first' });
+    }
     if (settings.userExperience.enableMagnetSearch && isVideoPage) {
         preregisterBlueprints.push({ phase: 'idle', label: 'ux:magnet:autoSearch' });
     }
@@ -450,7 +453,9 @@ async function initialize(): Promise<void> {
         initOrchestrator.add('critical', () => initializeSuperRankingNav(), { label: 'superRankingNav:init', priority: 9, visibilityPolicy: 'background_allowed' });
     }
 
-    initOrchestrator.add('high', () => removeUnwantedButtons(), { label: 'ui:remove-unwanted', delayMs: 200, priority: 3, visibilityPolicy: (isVideoPage || isActorPage) ? 'background_allowed' : 'foreground_first' });
+    if (isSiteAdRemovalOn(settings)) {
+        initOrchestrator.add('high', () => applySiteAdRemoval((settings as any).siteAdRemoval), { label: 'ui:site-ad-removal', delayMs: 200, priority: 3, visibilityPolicy: (isVideoPage || isActorPage) ? 'background_allowed' : 'foreground_first' });
+    }
 
     if (settings.userExperience.enableMagnetSearch && isVideoPage) {
         console.log('[JavDB Ext] Scheduling magnet search in idle phase (last)');
@@ -464,7 +469,6 @@ async function initialize(): Promise<void> {
                     showInlineResults: true,
                     showFloatingButton: true,
                     autoSearch: magnetSearchConfig.autoSearch === true,
-                    blockMojContent: magnetSearchConfig.blockMojContent !== false,
                     sortMode: normalizeMagnetSortMode(magnetSearchConfig.sortMode),
                     sources: {
                         sukebei: sources.sukebei !== false,
