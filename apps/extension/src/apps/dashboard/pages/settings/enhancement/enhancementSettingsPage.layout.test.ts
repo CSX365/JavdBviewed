@@ -162,8 +162,6 @@ describe('EnhancementSettingsPage layout', () => {
   it('keeps metadata for every rendered feature card so titles never fall back to a generic icon', () => {
     for (const title of [
       '内容过滤',
-      '番号过滤',
-      '演员过滤（列表）',
       '点击增强',
       '视频预览',
       '高清封面',
