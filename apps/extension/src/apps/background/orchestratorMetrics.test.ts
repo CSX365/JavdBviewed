@@ -303,7 +303,10 @@ describe('orchestratorMetrics S1-1 写路径治理', () => {
       expect(agg1.recordCount).toBe(5);
       expect(agg1.totalTasks).toBe(5);
 
+      // S1 B1 (cycle-14): 防抖 1.5s→4s，旧窗口不再触发
       await settle(1500);
+      expect(metricsWrites()).toHaveLength(0);
+      await settle(2500);
       expect(metricsWrites()).toHaveLength(1);
       expect(metricsWrites()[0] as unknown[]).toHaveLength(5);
 
@@ -322,7 +325,7 @@ describe('orchestratorMetrics S1-1 写路径治理', () => {
       for (let i = 1; i <= 50; i += 1) {
         await mod.handleSaveOrchestratorMetrics(makeMetric(i));
       }
-      await settle(1500);
+      await settle(4000);
 
       const writes = metricsWrites() as Array<Record<string, unknown>[]>;
       expect(writes).toHaveLength(1);
@@ -348,12 +351,56 @@ describe('orchestratorMetrics S1-1 写路径治理', () => {
       const mod = await loadModule();
       await mod.handleSaveOrchestratorMetrics(makeMetric(1));
       await mod.handleClearTaskDetails();
-      await settle(1500);
+      await settle(4000);
 
       const writes = metricsWrites() as Array<unknown>;
       expect(writes[writes.length - 1]).toEqual([]);
       const agg = await mod.handleGetAggregatedMetrics();
       expect(agg.recordCount).toBe(0);
+    });
+    describe('S1 B1 (cycle-14)：per-tab upsert + 4s 防抖', () => {
+      it('同 tab 多快照 upsert 只留最新：2 tab × 3 快照 → 落盘 2 条且值=最新', async () => {
+        const mod = await loadModule();
+        for (let round = 1; round <= 3; round += 1) {
+          await mod.handleSaveOrchestratorMetrics({ ...makeMetric(round), pageUrl: 'https://javdb.com/v/1', totalTasks: round });
+          await mod.handleSaveOrchestratorMetrics({ ...makeMetric(100 + round), pageUrl: 'https://javdb.com/v/2', totalTasks: round });
+        }
+        await settle(4000);
+        const writes = metricsWrites() as Array<Record<string, unknown>[]>;
+        expect(writes).toHaveLength(1);
+        expect(writes[0]).toHaveLength(2);
+        const byPage = new Map(writes[0].map((r) => [r.pageUrl, r]));
+        expect(byPage.get('https://javdb.com/v/1')?.totalTasks).toBe(3);
+        expect(byPage.get('https://javdb.com/v/2')?.totalTasks).toBe(3);
+        // 读方与落盘同语义：flush 后 buffer 清空，stored 即 2 个 tab 的最新快照
+        const agg = await mod.handleGetAggregatedMetrics();
+        expect(agg.recordCount).toBe(2);
+        expect(agg.totalTasks).toBe(6);
+      });
+
+      it('4s 防抖窗内 0 落盘，到窗后 flush 一次', async () => {
+        const mod = await loadModule();
+        await mod.handleSaveOrchestratorMetrics({ ...makeMetric(1), pageUrl: 'https://javdb.com/v/9' });
+        await settle(1500);
+        expect(metricsWrites()).toHaveLength(0); // 旧 1.5s 窗口不再触发
+        await settle(2500);
+        expect(metricsWrites()).toHaveLength(1);
+      });
+
+      it('stored 遗留同 tab 重复条在 upsert 时折叠，无页键记录保持 append', async () => {
+        const mod = await loadModule();
+        stored['orchestratorMetrics'] = [
+          { totalTasks: 1, pageUrl: 'https://javdb.com/v/1', savedAt: 1 },
+          { totalTasks: 2, pageUrl: 'https://javdb.com/v/1', savedAt: 2 },
+          { totalTasks: 5, savedAt: 3 },
+        ];
+        await mod.handleSaveOrchestratorMetrics({ ...makeMetric(9), pageUrl: 'https://javdb.com/v/1', totalTasks: 3 });
+        await settle(4000);
+        const writes = metricsWrites() as Array<Record<string, unknown>[]>;
+        expect(writes[0]).toHaveLength(2);
+        expect(writes[0].find((r) => r.pageUrl === 'https://javdb.com/v/1')?.totalTasks).toBe(3);
+        expect(writes[0].some((r) => r.totalTasks === 5)).toBe(true);
+      });
     });
   });
 });

@@ -7,9 +7,12 @@
  * - orchestratorTaskDetails 拆分为 hot（最新 ≤300 条，沿用旧键名，遗留数据天然在 hot）
  *   与 orchestratorTaskDetailsArchive（更旧数据，hot+archive 全局 cap 2000）
  * - saveTaskDetail 只入内存 buffer，resolve 于「已缓冲」而非「已落盘」
- * - S1-B (cycle-6)：handleSaveOrchestratorMetrics 同样改为 buffer + 1.5s 防抖合并写
+ * - S1-B (cycle-6)：handleSaveOrchestratorMetrics 同样改为 buffer + 防抖合并写
  *   （content 侧 fire-and-forget，语义变化：save 不再阻塞等待 storage 写）
- * - 1.5s 防抖合并写：burst 只落盘 1 次 hot（≤300 条 ≈146KB），替代旧的每次全量写
+ * - 防抖合并写：burst 只落盘 1 次 hot（≤300 条 ≈146KB），替代旧的每次全量写
+ * - S1 B1 (cycle-14)：orchestratorMetrics 缓冲/落盘/读方合并均按 pageUrl 做 per-tab upsert
+ *   （同 tab 多快照只留最新，15 tab 下历史深度从 ~10s 恢复到 ~100×防抖周期），
+ *   防抖 1.5s→4s（纯诊断数据面，onSuspend 急停 flush 保护关页，丢窗 ≤4s 可接受）
  * - archive 累积满 100 条（或全局 cap 触发裁剪）才持久化，archive 前缀不可变
  * - 读方合并 [...archive, ...hot]，读语义与旧的单数组一致
  * - SW onSuspend 急停落盘（telemetry 数据，丢失窗口 < 防抖周期，可接受）
@@ -28,11 +31,12 @@ const TASK_DETAILS_GLOBAL_CAP = 2000;
 const TASK_DETAILS_ARCHIVE_CHUNK = 100;
 /** 防抖合并写周期（ms） */
 const TASK_DETAILS_FLUSH_DEBOUNCE_MS = 1500;
-/** S1-B (cycle-6): orchestratorMetrics 内存 buffer + 1.5s 防抖合并写（原每次保存全量读-改-写，
- *  16 页 burst = 16+ 次全量读 + 16+ 次全量写；改后 burst 只落盘 1 次） */
+/** S1-B (cycle-6): orchestratorMetrics 内存 buffer + 防抖合并写（原每次保存全量读-改-写，
+ *  16 页 burst = 16+ 次全量读 + 16+ 次全量写；改后 burst 只落盘 1 次）
+ *  S1 B1 (cycle-14): 防抖 1.5s→4s，配合 per-tab upsert 降低 SW 稳态消息/落盘频率 */
 const METRICS_KEY = 'orchestratorMetrics';
 const METRICS_CAP = 100;
-const METRICS_FLUSH_DEBOUNCE_MS = 1500;
+const METRICS_FLUSH_DEBOUNCE_MS = 4000;
 let pendingMetrics: any[] = [];
 let metricsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let metricsFlushInflight: Promise<void> | null = null;
@@ -73,11 +77,55 @@ function scheduleMetricsFlush(): void {
   }, METRICS_FLUSH_DEBOUNCE_MS);
 }
 
-/** 合并读取 stored + buffer 的 metrics（buffer 恒新于 stored，读语义与旧单数组一致） */
+/** 取记录的 pageUrl 键（S1 B1 cycle-14：per-tab upsert 的键；缺失/空串视为无页键） */
+function metricsPageKey(record: any): string {
+  const pageUrl = typeof record?.pageUrl === 'string' ? record.pageUrl : '';
+  return pageUrl;
+}
+
+/** S1 B1 (cycle-14)：per-tab upsert 合并。
+ *  - 带 pageUrl 的记录同 tab 只留最新快照（batch 时间升序，后到覆盖先到；stored 中的旧快照被替换、
+ *    遗留同 tab 重复条折叠），既有 tab 保持原位置、新页追加到尾部；
+ *  - batch 全部无 pageUrl 时退回旧 append 语义（兼容旧测试与无页键场景）；
+ *  - cap 截断仍由调用方做（保留最新）。 */
+function mergeMetricsByPage(stored: any[], batch: any[]): any[] {
+  const latestByPage = new Map<string, any>();
+  const pageless: any[] = [];
+  for (const item of batch) {
+    const page = metricsPageKey(item);
+    if (page) latestByPage.set(page, item);
+    else pageless.push(item);
+  }
+  if (latestByPage.size === 0) {
+    return [...stored, ...batch];
+  }
+  const merged: any[] = [];
+  const seenPages = new Set<string>();
+  for (const item of stored) {
+    const page = metricsPageKey(item);
+    if (page) {
+      if (seenPages.has(page)) continue; // 折叠存储中的遗留同 tab 重复条
+      merged.push(latestByPage.get(page) ?? item);
+      seenPages.add(page);
+    } else {
+      merged.push(item);
+    }
+  }
+  for (const [page, item] of latestByPage) {
+    if (!seenPages.has(page)) {
+      merged.push(item);
+      seenPages.add(page);
+    }
+  }
+  merged.push(...pageless);
+  return merged;
+}
+
+/** 合并读取 stored + buffer 的 metrics（buffer 恒新于 stored；S1 B1 起按 pageUrl upsert） */
 async function readMetricsMerged(): Promise<any[]> {
   const storedRaw = await getValue<any[]>(METRICS_KEY, []);
   const stored = Array.isArray(storedRaw) ? storedRaw : [];
-  return [...stored, ...pendingMetrics];
+  return mergeMetricsByPage(stored, pendingMetrics);
 }
 
 /** 落盘 metrics buffer（防抖 / 急停 / 手动） */
@@ -94,7 +142,7 @@ export function flushMetrics(reason: string = 'manual'): Promise<void> {
     try {
       const storedRaw = await getValue<any[]>(METRICS_KEY, []);
       const stored = Array.isArray(storedRaw) ? storedRaw : [];
-      const merged = [...stored, ...batch].slice(-METRICS_CAP);
+      const merged = mergeMetricsByPage(stored, batch).slice(-METRICS_CAP);
       await setValue(METRICS_KEY, merged);
       console.log('[Background] Orchestrator metrics flushed', { reason, total: merged.length });
     } catch (error) {
