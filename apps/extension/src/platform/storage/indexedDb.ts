@@ -10,7 +10,7 @@ import { buildNewWorksTrendPointsFromDailyMap, mergeNewWorksDailyStatForTrend } 
 import { getSettings } from '../../utils/storage';
 import { normalizeListRecordForUse } from '../../shared/utils/listRecordHelpers';
 import { cleanVideoRecordInjectedSourceTags } from '../../shared/utils/tagFilter';
-import { enqueueVideoChange, scheduleEnqueue } from '../../features/cloudSync/enqueueLocalChange';
+import { enqueueVideoChange, enqueueVideoChanges, scheduleEnqueue } from '../../features/cloudSync/enqueueLocalChange';
 import type { ViewsDaily, ReportMonthly } from '../../types/insights';
 import { initDB, resetDBConnection } from './indexedDbConnection';
 import { buildLogsIndexedCursorSource, deriveLogCategory, deriveLogSource } from './indexedDbLogFields';
@@ -668,22 +668,37 @@ export async function listsGetBySource(source: 'javdb' | 'local'): Promise<ListR
   return records.map(normalizeListRecord);
 }
 
+/** viewedPatchListIds 结果 */
+export interface ViewedListPatchResult {
+  /** 清单成员关系是否实际变化（幂等 no-op 为 false，不触发 Cloud 入队） */
+  changed: boolean;
+  /** 变化后的记录（仅 changed 时返回，供批量合并入队） */
+  record?: VideoRecord;
+}
+
 /**
  * 原子更新单个视频的 listIds（在单个 IndexedDB 事务中完成读取-修改-写入）
  * 使用 Set 保证幂等性：add 时不重复添加，remove 时安全删除
+ *
+ * Cloud 入队口径（对齐 viewedPut）：仅当成员关系实际变化时，在事务提交后入队最新记录。
+ * 否则 pending 队列持续持有原 put 时刻的旧快照：既无法把新 listIds 同步到其它设备
+ * （清单「名字在、内容空」），同步回显/对账时还会把旧快照写回本地，回滚新成员关系。
  */
 export async function viewedPatchListIds(
   videoId: string,
   listId: string,
-  action: 'add' | 'remove'
-): Promise<void> {
+  action: 'add' | 'remove',
+  options?: BulkPutCloudOptions,
+): Promise<ViewedListPatchResult> {
   const db = await initDB();
   const tx = db.transaction(['viewedRecords', 'viewedByTag', 'viewedByList'], 'readwrite');
   const viewedStore = tx.objectStore('viewedRecords');
   const oldRecord = await viewedStore.get(videoId);
-  if (!oldRecord) { await tx.done; return; }
+  if (!oldRecord) { await tx.done; return { changed: false }; }
   const record = normalizeViewedRecord(oldRecord);
-  const ids = new Set<string>(Array.isArray(record.listIds) ? record.listIds : []);
+  const oldIds = Array.isArray(record.listIds) ? record.listIds : [];
+  const changed = action === 'add' ? !oldIds.includes(listId) : oldIds.includes(listId);
+  const ids = new Set<string>(oldIds);
   if (action === 'add') ids.add(listId);
   else ids.delete(listId);
   record.listIds = Array.from(ids);
@@ -691,6 +706,11 @@ export async function viewedPatchListIds(
   await viewedStore.put(record as any);
   await syncViewedSecondaryIndexes(tx.objectStore('viewedByTag'), tx.objectStore('viewedByList'), oldRecord, record);
   await tx.done;
+  if (changed && options?.skipCloudEnqueue !== true) {
+    // 本地写入在此点已持久化；入队与 viewedPut 同口径 fire-and-forget，不阻塞主路径。
+    scheduleEnqueue(() => enqueueVideoChange(record as unknown as VideoRecord));
+  }
+  return { changed, record: changed ? (record as unknown as VideoRecord) : undefined };
 }
 
 /**
@@ -698,12 +718,14 @@ export async function viewedPatchListIds(
  * @param videoIds 视频 ID 数组，或 'all' 表示所有视频
  * @param listId 目标清单 ID
  * @param action 'add' 或 'remove'
+ * @param options 远端同步回写（applyRemote）路径可传 skipCloudEnqueue，口径同 viewedBulkPut
  * @returns 成功与失败计数
  */
 export async function viewedBulkPatchListIds(
   videoIds: string[] | 'all',
   listId: string,
-  action: 'add' | 'remove'
+  action: 'add' | 'remove',
+  options?: BulkPutCloudOptions,
 ): Promise<{ successCount: number; failCount: number }> {
   let ids: string[];
   if (videoIds === 'all') {
@@ -715,15 +737,22 @@ export async function viewedBulkPatchListIds(
 
   let successCount = 0;
   let failCount = 0;
+  const changedRecords: VideoRecord[] = [];
 
-  // 串行执行，单条失败不中断整体流程
+  // 串行执行，单条失败不中断整体流程；单条版只记账变化（skipCloudEnqueue），
+  // 末尾一次性合并入队，避免 'all' 场景 N 次串行 pending 存储往返。
   for (const videoId of ids) {
     try {
-      await viewedPatchListIds(videoId, listId, action);
+      const result = await viewedPatchListIds(videoId, listId, action, { skipCloudEnqueue: true });
+      if (result.changed && result.record) changedRecords.push(result.record);
       successCount++;
     } catch {
       failCount++;
     }
+  }
+
+  if (changedRecords.length && options?.skipCloudEnqueue !== true) {
+    scheduleEnqueue(() => enqueueVideoChanges(changedRecords));
   }
 
   return { successCount, failCount };
