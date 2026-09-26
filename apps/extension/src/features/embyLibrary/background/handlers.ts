@@ -18,6 +18,7 @@ import {
 import { resolveEmbyStreamUrl } from '../domain/embyPlayback';
 import { reportEmbyPlaybackProgress } from '../domain/embyPlaystate';
 import { fetchEmbyItemDetail } from '../domain/embyItemDetail';
+import { EMBY_LIBRARY_REQUEST_TIMEOUT_MS, fetchWithTimeout } from '../domain/fetchWithTimeout';
 import { embyLog, mediaLog, playerLog } from '../mediaLibraryLogger';
 import { reportWatchProgress } from '../../media/mediaWatchEvidence';
 import { processPersistedEmbySyncCleanup } from '../../mediaCleanup/mediaCleanupStorage';
@@ -50,8 +51,8 @@ export interface EmbyLibraryHandlerDeps {
 }
 
 const DEFAULT_STATE: EmbyLibraryState = { entries: {}, updatedAt: 0 };
-/** 大库 / 穿透代理时 15s 偏紧；同步失败常见于超时被当成泛化「连接失败」 */
-const DEFAULT_LIBRARY_REQUEST_TIMEOUT_MS = 45000;
+/** 大库 / 穿透代理时 15s 偏紧；同步失败常见于超时被当成泛化「连接失败」（口径单一事实源在 domain/fetchWithTimeout） */
+const DEFAULT_LIBRARY_REQUEST_TIMEOUT_MS = EMBY_LIBRARY_REQUEST_TIMEOUT_MS;
 const TICKS_PER_SECOND = 10_000_000;
 
 function defaultDeps(): EmbyLibraryHandlerDeps {
@@ -809,7 +810,8 @@ export async function handleEmbyLibrarySetPlayed(
 
     if (hasEmbyUserSession(scopedServer) && scopedServer.userId && scopedServer.accessToken) {
       const path = `${base}/Users/${encodeURIComponent(scopedServer.userId)}/PlayedItems/${encodeURIComponent(itemId)}`;
-      response = await deps.fetchImpl(path, {
+      // 超时守卫：服务器黑洞时「标记已看」不再永久「写入中…」
+      response = await fetchWithTimeout(deps.fetchImpl, path, {
         method: played ? 'POST' : 'DELETE',
         headers: {
           ...buildEmbyAuthHeaders(scopedServer),
@@ -832,7 +834,7 @@ export async function handleEmbyLibrarySetPlayed(
         return;
       }
       const userDataUrl = `${base}/Users/${encodeURIComponent(scopedServer.userId)}/Items/${encodeURIComponent(itemId)}/UserData?api_key=${encodeURIComponent(scopedServer.apiKey)}`;
-      response = await deps.fetchImpl(userDataUrl, {
+      response = await fetchWithTimeout(deps.fetchImpl, userDataUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({

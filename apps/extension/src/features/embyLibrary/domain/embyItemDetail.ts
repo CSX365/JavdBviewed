@@ -15,6 +15,7 @@ import type {
 import { buildMediaItemImageUrl, normalizeServerUrl } from './libraryIndex';
 import { parseEmbyUserData } from './watchState';
 import { buildEmbyAuthHeaders } from './embyUserAuth';
+import { EMBY_FETCH_TIMEOUT_MESSAGE, EMBY_LIBRARY_REQUEST_TIMEOUT_MS } from './fetchWithTimeout';
 import { embyLog } from '../mediaLibraryLogger';
 
 const DETAIL_FIELDS = [
@@ -51,17 +52,35 @@ export async function fetchEmbyItemDetail(params: {
   server: ServerAuth;
   itemId: string;
   fetchImpl?: typeof fetch;
+  /** 整组请求（item + similar + collections，含 item 的多候选路径）共享的超时预算 */
+  timeoutMs?: number;
 }): Promise<{ success: boolean; detail?: EmbyItemDetailView; error?: string }> {
   const base = normalizeServerUrl(params.server.url);
   const itemId = String(params.itemId || '').trim();
   const fetchImpl = params.fetchImpl || fetch;
   if (!base || !itemId) return { success: false, error: '缺少服务器或 itemId' };
 
+  // 单一超时预算：服务器黑洞时整组请求在 timeoutMs 内必然落到失败态，
+  // 而不是 item 的 3 条候选路径各自挂到 TCP 层（旧行为=分钟级~无限挂起）
+  const timeoutMs = params.timeoutMs ?? EMBY_LIBRARY_REQUEST_TIMEOUT_MS;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const signal = controller?.signal;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(EMBY_FETCH_TIMEOUT_MESSAGE));
+    }, timeoutMs);
+  });
+
   try {
-    const [itemRes, similarRes, collectionsRes] = await Promise.all([
-      fetchItemJson(params.server, itemId, fetchImpl),
-      fetchSimilarItems(params.server, itemId, fetchImpl),
-      fetchCollectionsContainingItem(params.server, itemId, fetchImpl),
+    const [itemRes, similarRes, collectionsRes] = await Promise.race([
+      Promise.all([
+        fetchItemJson(params.server, itemId, fetchImpl, signal),
+        fetchSimilarItems(params.server, itemId, fetchImpl, 24, signal),
+        fetchCollectionsContainingItem(params.server, itemId, fetchImpl, 24, signal),
+      ]),
+      deadline,
     ]);
 
     if (!itemRes.ok) {
@@ -102,8 +121,14 @@ export async function fetchEmbyItemDetail(params: {
     });
     return { success: true, detail };
   } catch (e: any) {
+    if (signal?.aborted) {
+      embyLog.warn('详情拉取超时', { itemId });
+      return { success: false, error: EMBY_FETCH_TIMEOUT_MESSAGE };
+    }
     embyLog.error('拉取详情异常', { itemId, error: e?.message || String(e) });
     return { success: false, error: e?.message || '拉取详情失败' };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -111,6 +136,7 @@ async function fetchItemJson(
   server: ServerAuth,
   itemId: string,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; status: number; json: unknown; tried: string[] }> {
   const base = normalizeServerUrl(server.url);
   const headers = buildEmbyAuthHeaders(server);
@@ -147,7 +173,7 @@ async function fetchItemJson(
   for (const url of candidates) {
     tried.push(url.replace(/api_key=[^&]+/gi, 'api_key=***'));
     try {
-      const res = await fetchImpl(url, { method: 'GET', headers });
+      const res = await fetchImpl(url, { method: 'GET', headers, ...(signal ? { signal } : {}) });
       lastStatus = res.status;
       const json = await res.json().catch(() => ({}));
       lastJson = json;
@@ -162,7 +188,8 @@ async function fetchItemJson(
       if (json && typeof json === 'object' && (json as any).Id) {
         return { ok: true, status: res.status, json, tried };
       }
-    } catch {
+    } catch (e) {
+      if (signal?.aborted) throw e; // 已超时：停止尝试后续候选路径，交由上层归一为「连接超时」
       // try next
     }
   }
@@ -177,6 +204,7 @@ export async function fetchSimilarItems(
   itemId: string,
   fetchImpl: typeof fetch = fetch,
   limit = 24,
+  signal?: AbortSignal,
 ): Promise<EmbyRelatedItemView[]> {
   const base = normalizeServerUrl(server.url);
   if (!base || !itemId) return [];
@@ -190,7 +218,7 @@ export async function fetchSimilarItems(
 
     const res = await fetchImpl(
       `${base}/Items/${encodeURIComponent(itemId)}/Similar?${qs.toString()}`,
-      { method: 'GET', headers: buildEmbyAuthHeaders(server) },
+      { method: 'GET', headers: buildEmbyAuthHeaders(server), ...(signal ? { signal } : {}) },
     );
     if (!res.ok) return [];
     const raw = (await res.json().catch(() => ({}))) as any;
@@ -216,6 +244,7 @@ export async function fetchCollectionsContainingItem(
   itemId: string,
   fetchImpl: typeof fetch = fetch,
   limit = 24,
+  signal?: AbortSignal,
 ): Promise<EmbyRelatedItemView[]> {
   const base = normalizeServerUrl(server.url);
   const userId = String(server.userId || '').trim();
@@ -232,7 +261,7 @@ export async function fetchCollectionsContainingItem(
 
     const res = await fetchImpl(
       `${base}/Users/${encodeURIComponent(userId)}/Items?${qs.toString()}`,
-      { method: 'GET', headers: buildEmbyAuthHeaders(server) },
+      { method: 'GET', headers: buildEmbyAuthHeaders(server), ...(signal ? { signal } : {}) },
     );
     if (!res.ok) return [];
     const raw = (await res.json().catch(() => ({}))) as any;

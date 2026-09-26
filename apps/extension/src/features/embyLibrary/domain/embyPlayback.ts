@@ -11,6 +11,7 @@
  */
 import type { EmbyMediaServer } from '../types';
 import { buildEmbyAuthHeaders } from './embyUserAuth';
+import { EMBY_LIBRARY_REQUEST_TIMEOUT_MS, fetchWithTimeout } from './fetchWithTimeout';
 import { normalizeServerUrl } from './libraryIndex';
 
 export type EmbyStreamType = 'mp4' | 'm3u8' | 'auto';
@@ -309,6 +310,8 @@ export async function resolveEmbyStreamUrl(params: {
   itemId: string;
   serverId?: string;
   fetchImpl?: typeof fetch;
+  /** PlaybackInfo 超时（毫秒），默认对齐媒体库请求口径 */
+  timeoutMs?: number;
 }): Promise<EmbyResolvedStream> {
   const base = normalizeServerUrl(params.server.url);
   const itemId = String(params.itemId || '').trim();
@@ -337,10 +340,13 @@ export async function resolveEmbyStreamUrl(params: {
     const infoUrl = `${base}/Items/${encodeURIComponent(itemId)}/PlaybackInfo?${infoParams.toString()}`;
     const headers = buildEmbyAuthHeaders(params.server);
 
-    const infoRes = await fetchImpl(infoUrl, {
-      method: 'GET',
-      headers,
-    });
+    // 超时守卫：服务器黑洞时 PlaybackInfo 不再无限挂起（旧行为=播放解析永久悬挂）
+    const infoRes = await fetchWithTimeout(
+      fetchImpl,
+      infoUrl,
+      { method: 'GET', headers },
+      params.timeoutMs ?? EMBY_LIBRARY_REQUEST_TIMEOUT_MS,
+    );
 
     if (infoRes.status === 401 || infoRes.status === 403) {
       return {

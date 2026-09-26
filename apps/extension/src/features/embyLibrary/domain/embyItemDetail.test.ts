@@ -2,6 +2,7 @@
  * @file embyItemDetail.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
+import { EMBY_FETCH_TIMEOUT_MESSAGE } from './fetchWithTimeout';
 import {
   buildChapterImageUrl,
   fetchEmbyItemDetail,
@@ -207,5 +208,55 @@ describe('fetchEmbyItemDetail parallel', () => {
     expect(ret.detail?.collections).toEqual([]);
     const urls = fetchImpl.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes('BoxSet'))).toBe(false);
+  });
+});
+
+describe('fetchEmbyItemDetail timeout', () => {
+  /** 黑洞 fetch：永不响应，signal abort 时按真实 fetch 语义 reject */
+  function hangingFetchImpl() {
+    return vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener('abort', abort, { once: true });
+      }));
+  }
+
+  it('服务器黑洞时在超时预算内返回「连接超时」，不再逐条挂满候选路径', async () => {
+    const fetchImpl = hangingFetchImpl();
+    const started = Date.now();
+    const ret = await fetchEmbyItemDetail({
+      server,
+      itemId: 'blackhole-1',
+      fetchImpl: fetchImpl as any,
+      timeoutMs: 80,
+    });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(2000);
+    expect(ret.success).toBe(false);
+    expect(ret.error).toBe(EMBY_FETCH_TIMEOUT_MESSAGE);
+    // item 只应尝试了 1 条候选路径（后续候选被 abort 拦截），similar/collections 各 1 次
+    expect(fetchImpl.mock.calls.length).toBe(3);
+  });
+
+  it('正常响应不受超时守卫影响（200 原样成功）', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/Similar')) return { ok: true, status: 200, json: async () => ({ Items: [] }) } as Response;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ Id: '42', Name: 'T', MediaSources: [] }),
+      } as Response;
+    });
+    const ret = await fetchEmbyItemDetail({
+      server,
+      itemId: '42',
+      fetchImpl: fetchImpl as any,
+      timeoutMs: 5000,
+    });
+    expect(ret.success).toBe(true);
+    expect(ret.detail?.name).toBe('T');
   });
 });

@@ -1256,4 +1256,54 @@ describe('emby library background handlers', () => {
       skipped: true,
     }));
   });
+
+  it('marks-as-watched writeback request carries abort signal (timeout guard wiring)', async () => {
+    const sendResponse = vi.fn();
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchImpl = createFetchMock(async (_url, init) => {
+      signals.push(init?.signal);
+      return new Response('{}', { status: 200 });
+    });
+    const previousState: EmbyLibraryState = {
+      entries: {
+        'ABC-301': [{
+          serverType: 'emby',
+          serverName: 'Main',
+          serverUrl: 'http://media.local:8096',
+          itemId: 'item-301',
+          itemName: 'ABC-301',
+          updatedAt: 500,
+        }],
+      },
+      updatedAt: 500,
+    };
+    const sessionServer: EmbyMediaServer = {
+      ...server,
+      accessToken: 'user-token',
+      userId: 'user-1',
+    };
+    const deps = {
+      ...createDeps(fetchImpl, previousState),
+      getSettings: vi.fn(async () => ({
+        emby: {
+          mediaServers: [sessionServer],
+          libraryStatus: { enabled: true, showOnList: true, showOnDetail: true },
+        },
+      })),
+    };
+
+    await handleEmbyLibrarySetPlayed(
+      {
+        itemId: 'item-301',
+        serverUrl: 'http://media.local:8096/',
+        played: true,
+      },
+      sendResponse,
+      deps,
+    );
+
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
 });
