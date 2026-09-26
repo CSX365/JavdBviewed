@@ -170,7 +170,7 @@ describe('detail area visual polish', () => {
     const rows = Array.from(document.querySelectorAll<HTMLElement>('#magnets-content > .item.columns.is-desktop'));
 
     expect(styleText).toContain('#magnets-content > .item.columns.is-desktop');
-    expect(styleText).toContain('.top-meta .moj-content');
+    // .moj-content 隐藏规则已迁 siteAdRemoval feature（断言见 siteAdRemoval.test.ts / tests/dom/siteAdRemoval.test.ts）
     expect(styleText).toContain('.top-meta.jdb-magnet-meta-bar');
     expect(styleText).toContain('.magnet-search-tag.is-success');
     expect(styleText).toContain('#magnets-content .jdb-native-magnet-row');
