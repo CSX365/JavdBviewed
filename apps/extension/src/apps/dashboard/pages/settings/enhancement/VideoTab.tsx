@@ -556,34 +556,6 @@ export function VideoTab({
           </div>
         ) : null}
       </SettingSection>
-
-      <SettingSection title="去除原站广告" description="隐藏原站推广位与推广按钮，与磁力功能互不影响">
-        <SettingToggleRow
-          id="siteAdRemovalEnabled"
-          label="去除原站广告"
-          description="隐藏原站推广位（.moj-content）与官方App、Telegram 推广按钮"
-          checked={form.siteAdRemovalEnabled}
-          onChange={(v) => setToggle('siteAdRemovalEnabled', v)}
-        />
-        {form.siteAdRemovalEnabled ? (
-          <div className="flex flex-col gap-2">
-            <SettingToggleRow
-              id="siteAdRemovalRemovePromoButtons"
-              label="移除推广按钮"
-              description="官方App 下载与 JavDB公告 Telegram 入口"
-              checked={form.siteAdRemovalRemovePromoButtons}
-              onChange={(v) => setToggle('siteAdRemovalRemovePromoButtons', v)}
-            />
-            <SettingToggleRow
-              id="siteAdRemovalRemoveExtraAds"
-              label="额外广告位"
-              description="隐藏 .sub-header 与 .app-desktop-banner 广告位"
-              checked={form.siteAdRemovalRemoveExtraAds}
-              onChange={(v) => setToggle('siteAdRemovalRemoveExtraAds', v)}
-            />
-          </div>
-        ) : null}
-      </SettingSection>
     </div>
   );
 }

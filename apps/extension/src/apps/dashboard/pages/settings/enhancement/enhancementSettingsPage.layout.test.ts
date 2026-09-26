@@ -106,11 +106,17 @@ describe('EnhancementSettingsPage layout', () => {
     expect(pageSource).toContain('siteAppearanceAutoExpandReplaceTip');
   });
 
-  it('keeps the site ad removal section independent from magnet search', () => {
-    expect(pageSource).toContain('title="去除原站广告"');
-    expect(pageSource).toContain('id="siteAdRemovalEnabled"');
-    expect(pageSource).toContain('id="siteAdRemovalRemovePromoButtons"');
-    expect(pageSource).toContain('id="siteAdRemovalRemoveExtraAds"');
+  it('keeps the site ad removal section in the other-enhancements tab (position lock)', () => {
+    const videoTabSource = readFileSync(join(here, 'VideoTab.tsx'), 'utf8');
+    const otherTabSource = readFileSync(join(here, 'OtherTab.tsx'), 'utf8');
+    expect(otherTabSource).toContain('title="去除原站广告"');
+    expect(otherTabSource).toContain('id="siteAdRemovalEnabled"');
+    expect(otherTabSource).toContain('id="siteAdRemovalRemovePromoButtons"');
+    expect(otherTabSource).toContain('id="siteAdRemovalRemoveExtraAds"');
+    expect(videoTabSource).not.toContain('title="去除原站广告"');
+    expect(videoTabSource).not.toContain('id="siteAdRemovalEnabled"');
+    expect(videoTabSource).not.toContain('id="siteAdRemovalRemovePromoButtons"');
+    expect(videoTabSource).not.toContain('id="siteAdRemovalRemoveExtraAds"');
     expect(pageSource).not.toContain('magnetBlockMojContent');
   });
 
