@@ -14,7 +14,6 @@ describe('mergeEnhancementSettingsForSave', () => {
     current.listEnhancement.hideBlacklistedActorsInList = true;
     current.listEnhancement.hideNonFavoritedActorsInList = true;
     current.listEnhancement.hideUnrecognizedActorsInList = false;
-    current.listEnhancement.treatSubscribedAsFavorited = false;
     current.listEnhancement.previewVolume = 0.42;
     current.listEnhancement.listDisplayControl = {
       enabled: true,
@@ -37,7 +36,6 @@ describe('mergeEnhancementSettingsForSave', () => {
     expect(merged.listEnhancement?.hideBlacklistedActorsInList).toBe(true);
     expect(merged.listEnhancement?.hideNonFavoritedActorsInList).toBe(true);
     expect(merged.listEnhancement?.hideUnrecognizedActorsInList).toBe(false);
-    expect(merged.listEnhancement?.treatSubscribedAsFavorited).toBe(false);
     expect(merged.listEnhancement?.listDisplayControl?.columnCount).toBe(6);
     expect(merged.listEnhancement?.listDisplayControl?.containerWidth).toBe(120);
   });

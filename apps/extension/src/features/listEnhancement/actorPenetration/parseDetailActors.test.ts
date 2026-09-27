@@ -96,3 +96,57 @@ describe('parseDetailActors', () => {
     expect(extractFemaleActors(parseDetailActors(makeDoc('')))).toEqual([]);
   });
 });
+
+describe('parseDetailActors 英文标签兼容（B7：镜像按 Accept-Language 返回英文页）', () => {
+  it('识别 Actor(s): 为女性面板', () => {
+    const html = `
+<html><body>
+  <div class="panel-block">
+    <strong>Actor(s):</strong>
+    <div class="value"><a href="/actors/e1">Actress One</a></div>
+  </div>
+</body></html>`;
+    const female = extractFemaleActors(parseDetailActors(makeDoc(html)));
+    expect(female.map(a => a.id)).toEqual(['e1']);
+  });
+
+  it('识别 Male Actor(s): 为男性面板（须先于女性 Actor 子串判断，顺序颠倒会误判性别）', () => {
+    const html = `
+<html><body>
+  <div class="panel-block">
+    <strong>Male Actor(s):</strong>
+    <div class="value"><a href="/actors/m3001">Male One</a></div>
+  </div>
+  <div class="panel-block">
+    <strong>Actor(s):</strong>
+    <div class="value"><a href="/actors/f3001">Female One</a></div>
+  </div>
+</body></html>`;
+    const all = parseDetailActors(makeDoc(html));
+    expect(all.find(a => a.id === 'm3001')?.gender).toBe('male');
+    expect(extractFemaleActors(all).map(a => a.id)).toEqual(['f3001']);
+  });
+
+  it('识别 Actress: 为女性面板（单数变体）', () => {
+    const html = `
+<html><body>
+  <div class="panel-block">
+    <strong>Actress:</strong>
+    <div class="value"><a href="/actors/a5001">Actress Two</a></div>
+  </div>
+</body></html>`;
+    const female = extractFemaleActors(parseDetailActors(makeDoc(html)));
+    expect(female.map(a => a.id)).toEqual(['a5001']);
+  });
+
+  it('非演员英文面板（Release:）继续跳过', () => {
+    const html = `
+<html><body>
+  <div class="panel-block">
+    <strong>Release:</strong>
+    <div class="value">Some Studio</div>
+  </div>
+</body></html>`;
+    expect(parseDetailActors(makeDoc(html))).toEqual([]);
+  });
+});

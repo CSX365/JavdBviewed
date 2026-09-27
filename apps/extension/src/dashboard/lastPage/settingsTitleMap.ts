@@ -6,6 +6,8 @@
 
 /** panelId / hash subPath → 用户可见短名 */
 export const SETTINGS_SUBPATH_TITLES: Readonly<Record<string, string>> = {
+  // 2026-09-27 IA 裁决：display-settings 页已迁入 enhancement-settings/list，
+  // 条目保留仅供存量 lastPage 记录的标题解析（旧 hash 在 mount 层重定向）
   'display-settings': '显示设置',
   'search-engine-settings': '搜索引擎',
   'enhancement-settings': '功能增强',

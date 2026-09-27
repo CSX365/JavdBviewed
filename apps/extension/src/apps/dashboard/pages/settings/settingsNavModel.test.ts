@@ -19,7 +19,12 @@ describe('settingsNavModel', () => {
   });
 
   it('builds settings hash', () => {
-    expect(settingsNavHref('display-settings')).toBe('#tab-settings/display-settings');
+    expect(settingsNavHref('enhancement-settings')).toBe('#tab-settings/enhancement-settings');
+  });
+
+  it('drops the display-settings entry after the IA migration', () => {
+    // 2026-09-27 IA 裁决：显示设置整页迁入功能增强 · 列表页增强，入口卡片随之移除
+    expect(SETTINGS_NAV_ITEMS.some((i) => i.id === 'display-settings')).toBe(false);
   });
 
   it('filters by title description or id', () => {

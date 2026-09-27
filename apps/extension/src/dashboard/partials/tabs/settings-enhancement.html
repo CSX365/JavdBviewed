@@ -509,6 +509,42 @@
                                         </div>
                                     </div>
 
+                                    <!-- 列表过滤（2026-09-27 IA 裁决自「显示设置」页迁入 ListTab；
+                                         本块仅供设置搜索索引，生产 DOM 由 React ListTab 渲染） -->
+                                    <div class="settings-subsection" data-subtab="list">
+                                        <h4>列表过滤</h4>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideViewed">
+                                            <label for="hideViewed">隐藏已标记"看过"的影片</label>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideBrowsed">
+                                            <label for="hideBrowsed">隐藏已浏览详情页的影片</label>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideVR">
+                                            <label for="hideVR">隐藏所有VR影片</label>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideWant">
+                                            <label for="hideWant">隐藏想看的影片</label>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideBlacklistedActorsInList">
+                                            <label for="hideBlacklistedActorsInList">隐藏含黑名单演员的作品</label>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideNonFavoritedActorsInList">
+                                            <label for="hideNonFavoritedActorsInList">隐藏匹配演员全在黑名单中的作品</label>
+                                            <p class="input-description">同时隐藏列表页有演员信息但本地无演员记录的作品。本地演员库暂不区分收藏/未收藏</p>
+                                        </div>
+                                        <div class="form-group-checkbox">
+                                            <input type="checkbox" id="hideUnrecognizedActorsInList">
+                                            <label for="hideUnrecognizedActorsInList">隐藏无法识别演员的作品</label>
+                                            <p class="input-description">仅在本地演员库可用时生效；本地演员库为空时不隐藏。默认关闭</p>
+                                        </div>
+                                    </div>
+
                                     <!-- 新：🖱️ 启用点击增强（独立区块，右侧通用开关） -->
                                     <div class="form-group" data-subtab="list">
                                         <label class="checkbox-label">

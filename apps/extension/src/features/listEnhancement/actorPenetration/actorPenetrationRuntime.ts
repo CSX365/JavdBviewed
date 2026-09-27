@@ -8,11 +8,12 @@
 import {
   readActorPenetrationCache,
   writeActorPenetrationFailure,
+  writeActorPenetrationLoginRequired,
   writeActorPenetrationSuccess,
   type ActorPenetrationCacheResult,
   type ActorPenetrationCacheValue,
 } from './actorPenetrationCache';
-import { extractFemaleActors, parseDetailActors } from './parseDetailActors';
+import { extractFemaleActors, parseDetailActors, type DetailActor } from './parseDetailActors';
 import { removeActorRow, renderActorRow, type ActorLinkMark } from './renderActorRow';
 import { bindActorQuickActionsToLink } from '../../actorEnhancement/actorQuickActionsManager';
 import { countContentPerformanceEvent } from '../../../platform/tasks';
@@ -28,14 +29,21 @@ export interface ActorPenetrationDeps {
    * 实现需自行保证幂等、可缓存，且不抛错。
    */
   getActorMark?: (actorId: string, actorName: string) => ActorLinkMark | undefined;
-  /** 详情 HTML 请求（默认同源 credentials:include fetch + 超时）。 */
-  fetchText?: (url: string) => Promise<string>;
+  /** 详情请求（默认同源 credentials:include fetch + 超时）。返回最终 URL 用于识别 302→登录页。 */
+  fetchText?: (url: string) => Promise<ActorPenetrationFetchResult>;
   /** 读取缓存（默认 platform 缓存）。 */
   readCache?: (code: string) => Promise<ActorPenetrationCacheResult>;
   /** 写成功缓存（默认 7 天 TTL）。 */
   writeSuccess?: (code: string, value: ActorPenetrationCacheValue) => Promise<void>;
   /** 写失败缓存（默认 10 分钟 TTL，抑制重试）。 */
   writeFailure?: (code: string) => Promise<void>;
+  /** 写「需登录」缓存（默认 1 小时 TTL，独立状态）。 */
+  writeLoginRequired?: (code: string) => Promise<void>;
+  /**
+   * 演员行渲染完成回调（D-B4：穿透行出现真实演员 id 后，由 manager 触发该卡片的
+   * 本地隐藏重决策；不传则无副作用）。
+   */
+  onActorsRendered?: (item: HTMLElement, actors: DetailActor[]) => void;
   /** 详情请求超时（毫秒），默认 10s */
   timeoutMs?: number;
 }
@@ -44,6 +52,35 @@ export interface ActorPenetrationTarget {
   item: HTMLElement;
   code: string;
   detailUrl: string;
+}
+
+/** 详情请求结果：html + 重定向后的最终 URL（识别 302→登录页）。 */
+export interface ActorPenetrationFetchResult {
+  html: string;
+  finalUrl?: string;
+}
+
+/** fetch 成功后的解析四态（09-26-display-settings-audit B7：失败原因不再互相掩盖）。 */
+type FetchParseOutcome =
+  | { status: 'ok'; value: ActorPenetrationCacheValue }
+  | { status: 'fetch-error' }     // 网络/超时/解析异常：写 10 分钟失败抑制（原行为）
+  | { status: 'login-required' }  // 302→登录页：独立状态，1 小时抑制
+  | { status: 'empty' };          // 详情页正常但 0 名女性演员：不写任何缓存（不抑制、不占重试预算）
+
+/**
+ * 识别「需登录」：优先看重定向后的最终 URL（真机口径：登录受限番 302 落 /login），
+ * 兜底嗅探登录页 title（自定义 fetchText 未提供 finalUrl 时）。
+ */
+export function detectLoginRequired(finalUrl: string | undefined, html: string): boolean {
+  if (finalUrl) {
+    try {
+      const pathname = new URL(finalUrl).pathname;
+      if (/^\/(login|sign[-_]?in)(\/|$)/i.test(pathname)) return true;
+    } catch {
+      /* finalUrl 非绝对 URL 时走 html 兜底 */
+    }
+  }
+  return /<title[^>]*>\s*(sign[\s-]?in|log\s?in)/i.test(html);
 }
 
 const MAX_ACTORS_RENDERED = 3;
@@ -83,16 +120,28 @@ export class ActorPenetrationRuntime {
         return;
       }
 
-      const value = await this.fetchAndParse(detailUrl);
-      if (value === null) {
+      const outcome = await this.fetchAndParse(detailUrl);
+      if (outcome.status === 'fetch-error') {
         await (this.deps.writeFailure ?? writeActorPenetrationFailure)(code);
         countContentPerformanceEvent('actorPenetration.failure');
         return;
       }
+      if (outcome.status === 'login-required') {
+        await (this.deps.writeLoginRequired ?? writeActorPenetrationLoginRequired)(code);
+        countContentPerformanceEvent('actorPenetration.loginRequired');
+        return;
+      }
+      if (outcome.status === 'empty') {
+        // 无女性演员是稳定事实：不写失败抑制（原实现把 parse 0 人当失败，
+        // 误写 10 分钟 failed 缓存，见 B7）；也不写成功空缓存，避免站点改版
+        // 导致全部作品被空缓存锁 7 天。代价：每次访问重新请求一次（受可见性门控+并发限制）。
+        countContentPerformanceEvent('actorPenetration.empty');
+        return;
+      }
 
-      await (this.deps.writeSuccess ?? writeActorPenetrationSuccess)(code, value);
+      await (this.deps.writeSuccess ?? writeActorPenetrationSuccess)(code, outcome.value);
       if (item.isConnected) {
-        this.render(item, value);
+        this.render(item, outcome.value);
       }
       countContentPerformanceEvent('actorPenetration.success');
     } catch (error) {
@@ -127,33 +176,54 @@ export class ActorPenetrationRuntime {
         }
       },
     });
+    if (this.deps.onActorsRendered) {
+      try {
+        this.deps.onActorsRendered(item, value.actors);
+      } catch {
+        /* 重决策失败不影响渲染主流程 */
+      }
+    }
   }
 
-  private async fetchAndParse(url: string): Promise<ActorPenetrationCacheValue | null> {
-    const fetchText = this.deps.fetchText ?? (async u => (await fetch(u, { credentials: 'include' })).text());
-    let html: string;
+  private async fetchAndParse(url: string): Promise<FetchParseOutcome> {
+    const fetchText = this.deps.fetchText ?? (async u => {
+      const res = await fetch(u, { credentials: 'include' });
+      const html = await res.text();
+      return { html, finalUrl: res.url };
+    });
+    let result: ActorPenetrationFetchResult;
     try {
-      html = await withTimeout(fetchText(url), this.timeoutMs);
+      result = await withTimeout(fetchText(url), this.timeoutMs);
     } catch {
-      return null;
+      return { status: 'fetch-error' };
     }
-    if (!html) return null;
+    const html = result.html;
+    if (!html) return { status: 'fetch-error' };
+
+    // 登录受限优先识别：302→登录页的 html 没有演员面板，若先走 parse 会把
+    // 「需登录」误判为「无演员」
+    if (detectLoginRequired(result.finalUrl, html)) {
+      return { status: 'login-required' };
+    }
 
     let doc: Document;
     try {
       doc = new DOMParser().parseFromString(html, 'text/html');
     } catch {
-      return null;
+      return { status: 'fetch-error' };
     }
 
     const female = extractFemaleActors(parseDetailActors(doc));
     // 缓存最多保存 MAX_ACTORS_RENDERED + 1 个以计算 hasMore；渲染层再截断
     const clean = female.filter(a => a.name).slice(0, MAX_ACTORS_RENDERED + 1);
-    if (clean.length === 0) return null;
+    if (clean.length === 0) return { status: 'empty' };
     return {
-      actors: clean,
-      hasMore: clean.length > MAX_ACTORS_RENDERED,
-      fetchedAt: Date.now(),
+      status: 'ok',
+      value: {
+        actors: clean,
+        hasMore: clean.length > MAX_ACTORS_RENDERED,
+        fetchedAt: Date.now(),
+      },
     };
   }
 }

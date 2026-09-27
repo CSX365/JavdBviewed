@@ -209,4 +209,42 @@ describe('EnhancementSettingsPage layout', () => {
       expect(pageSource).toContain(text);
     }
   });
+
+  it('keeps the migrated list filter sections in list tab after content filter', () => {
+    // 2026-09-27 IA 裁决：原「显示设置」页整页迁入 ListTab；
+    // 键命名空间不变（display.*/listEnhancement.*），控件 id 与原页一致（设置搜索锚点）。
+    const listTabSource = readFileSync(join(here, 'ListTab.tsx'), 'utf8');
+    expect(listTabSource).toContain('title="番号过滤"');
+    expect(listTabSource).toContain('title="演员过滤（列表）"');
+    expect(listTabSource).toContain("from './listFilterFields'");
+
+    // 位置锁定：番号过滤 紧跟 内容过滤 section 之后，点击增强 之后不再出现
+    const order = [
+      'title="内容过滤"',
+      'title="番号过滤"',
+      'title="演员过滤（列表）"',
+      'title="点击增强"',
+    ];
+    let cursor = -1;
+    for (const marker of order) {
+      const at = listTabSource.indexOf(marker, cursor + 1);
+      expect(at, `marker ${marker} after previous`).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+
+    // 稳定控件 id（与原「显示设置」页一致，设置搜索锚点不漂移）；
+    // id 字面量集中定义在 listFilterFields.ts，ListTab 通过 field.id 渲染
+    const fieldsSource = readFileSync(join(here, 'listFilterFields.ts'), 'utf8');
+    for (const id of [
+      'hideViewed',
+      'hideBrowsed',
+      'hideVR',
+      'hideWant',
+      'hideBlacklistedActorsInList',
+      'hideNonFavoritedActorsInList',
+      'hideUnrecognizedActorsInList',
+    ]) {
+      expect(fieldsSource).toContain(`id: '${id}'`);
+    }
+  });
 });

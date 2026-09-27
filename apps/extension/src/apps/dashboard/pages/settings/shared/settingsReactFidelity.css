@@ -34,10 +34,6 @@
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
 }
 
-.ssp-page[data-settings-stack='react-full']:has(#display-settings) [data-ui-pattern='page-header'] h2 {
-  color: #8b5cf6;
-}
-
 .ssp-page[data-settings-stack='react-full'] [data-ui-pattern='page-header'] p {
   margin-top: 0.75rem;
   max-width: 600px;
@@ -45,7 +41,6 @@
   line-height: 1.6;
 }
 
-.ssp-page[data-settings-stack='react-full'] #display-settings,
 .ssp-page[data-settings-stack='react-full'] #search-engine-settings,
 .ssp-page[data-settings-stack='react-full'] #ai-settings,
 .ssp-page[data-settings-stack='react-full'] #privacy-settings,
@@ -120,7 +115,6 @@
  * mounted without that wrapper, so the same cues are keyed on the stable React
  * mount marker instead, keeping every page's recognition cue intact. */
 .ssp-page[data-settings-stack='react-full'] :is(
-  [data-display-settings-react='1'],
   [data-search-engine-settings-react='1'],
   [data-ai-settings-react='1'],
   [data-privacy-settings-react='1'],
@@ -134,7 +128,6 @@
   overflow: hidden;
 }
 
-.ssp-page[data-settings-stack='react-full'] [data-display-settings-react='1']::before,
 .ssp-page[data-settings-stack='react-full'] [data-search-engine-settings-react='1']::before,
 .ssp-page[data-settings-stack='react-full'] [data-ai-settings-react='1']::before,
 .ssp-page[data-settings-stack='react-full'] [data-privacy-settings-react='1']::before,
@@ -150,10 +143,6 @@
   height: 200px;
   border-radius: 20px;
   content: '';
-}
-
-.ssp-page[data-settings-stack='react-full'] [data-display-settings-react='1']::before {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.05), rgba(167, 139, 250, 0.05) 50%, rgba(196, 181, 253, 0.05));
 }
 
 .ssp-page[data-settings-stack='react-full'] [data-search-engine-settings-react='1']::before {
@@ -196,10 +185,6 @@
   background: linear-gradient(135deg, rgba(212, 165, 116, 0.08), rgba(184, 149, 109, 0.08) 50%, rgba(160, 132, 92, 0.08));
 }
 
-.ssp-page[data-settings-stack='react-full']:has([data-display-settings-react='1']) [data-ui-pattern='page-header'] h2 {
-  color: var(--display-primary, #8b5cf6);
-}
-
 .ssp-page[data-settings-stack='react-full']:has([data-search-engine-settings-react='1']) [data-ui-pattern='page-header'] h2 {
   color: var(--search-primary, #f59e0b);
 }
@@ -226,10 +211,6 @@
 
 .ssp-page[data-settings-stack='react-full']:has([data-network-test-settings-react='1']) [data-ui-pattern='page-header'] h2 {
   color: var(--primary, var(--color-primary));
-}
-
-.ssp-page[data-settings-stack='react-full']:has([data-display-settings-react='1']) [data-ui-pattern='page-header'] h2::before {
-  content: '🎨';
 }
 
 .ssp-page[data-settings-stack='react-full']:has([data-search-engine-settings-react='1']) [data-ui-pattern='page-header'] h2::before {

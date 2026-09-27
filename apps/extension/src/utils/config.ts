@@ -595,7 +595,6 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
         hideBlacklistedActorsInList: false,
         hideNonFavoritedActorsInList: false,
         hideUnrecognizedActorsInList: false, // 默认关闭：仅本地演员库可用时生效，空演员库不隐藏
-        treatSubscribedAsFavorited: true,
         // 新增：列表页显示控制默认配置
         listDisplayControl: {
             enabled: true,

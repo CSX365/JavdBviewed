@@ -23,12 +23,6 @@ export async function testSettingsModularSystem(): Promise<void> {
         const panelIds = settingsPanelManager.getPanelIds();
         console.log('[Test] 已注册的面板:', panelIds);
         
-        // 测试获取特定面板
-        const displayPanel = settingsPanelManager.getPanel('display-settings');
-        if (displayPanel) {
-            console.log('[Test] 成功获取显示设置面板:', displayPanel.panelName);
-        }
-        
         const searchEnginePanel = settingsPanelManager.getPanel('search-engine-settings');
         if (searchEnginePanel) {
             console.log('[Test] 成功获取搜索引擎设置面板:', searchEnginePanel.panelName);

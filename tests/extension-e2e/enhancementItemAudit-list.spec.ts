@@ -224,7 +224,6 @@ function buildListAuditSettings(): Record<string, unknown> {
       hideBlacklistedActorsInList: true,
       hideNonFavoritedActorsInList: false,
       hideUnrecognizedActorsInList: false,
-      treatSubscribedAsFavorited: true,
       listDisplayControl: {
         enabled: true,
         columnCount: 4,

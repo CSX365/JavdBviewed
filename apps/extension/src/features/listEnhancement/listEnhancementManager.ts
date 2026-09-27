@@ -77,7 +77,7 @@ import {
   type ListSortingController,
 } from './ui/listSortingControls';
 import { createActorWorkQueue, type ActorWorkQueue } from './application/actorWorkQueue';
-import { createActorPenetrationRuntime, resolveActorLinkMark } from './actorPenetration';
+import { createActorPenetrationRuntime, resolveActorLinkMark, type DetailActor } from './actorPenetration';
 import { createActorVisibilityGate } from './application/actorVisibilityGate';
 import { countContentPerformanceEvent } from '../../platform/tasks';
 import { recomputeListHiding, readListHidingEnablement } from '../list-hiding';
@@ -149,6 +149,9 @@ class ListEnhancementManager {
   });
   private readonly actorPenetration = createActorPenetrationRuntime({
     logger: (...args) => log(...args),
+    onActorsRendered: (item, actors) => {
+      this.schedulePostPenetrationRehide(item, actors);
+    },
     getActorMark: (actorId) => {
       if (!this.config.enableActorNameMarks || !this.actorNameMarkPrepped) return undefined;
       return resolveActorLinkMark(
@@ -198,8 +201,7 @@ class ListEnhancementManager {
       watch: (o, c) =>
         o.hideBlacklistedActorsInList !== c.hideBlacklistedActorsInList ||
         o.hideNonFavoritedActorsInList !== c.hideNonFavoritedActorsInList ||
-        o.hideUnrecognizedActorsInList !== c.hideUnrecognizedActorsInList ||
-        o.treatSubscribedAsFavorited !== c.treatSubscribedAsFavorited,
+        o.hideUnrecognizedActorsInList !== c.hideUnrecognizedActorsInList,
       apply: () => {
         log('Actor filter config changed, reapplying filters...');
         this.recomputeAllListHiding();
@@ -736,6 +738,25 @@ class ListEnhancementManager {
     );
   }
 
+  /**
+   * 演员穿透行渲染完成后补一次本地重决策（09-26-display-settings-audit B4 修复）：
+   * 初始隐藏决策可能早于穿透行渲染（只能按标题近似），渲染出真实演员链接后
+   * 用真实 id 重判一次，消除「先开穿透再开过滤」与「同时开」的结果差异。
+   * 纯本地计算、无网络请求；actorWorkQueue 按 item 键去重，
+   * 渲染风暴期同一卡片已有待决/进行中任务时直接跳过（防反复决策）。
+   */
+  private schedulePostPenetrationRehide(item: HTMLElement, actors: DetailActor[]): void {
+    if (!this.isActorHidingEnabled()) return;
+    if (!item.isConnected) return;
+    if (!actors.some(a => a.id)) return; // 无真实演员 id，重决策无增益
+    const info = extractListItemVideoInfo(item);
+    if (!info?.code) return;
+    this.actorWorkQueue.enqueue(async () => {
+      if (!item.isConnected) return;
+      await this.applyActorBasedHiding(item, info);
+    }, item);
+  }
+
   /** 名称标识数据变化/预热完成后，重放已渲染的穿透行以刷新/清除着色。 */
   private reapplyActorRowMarks(): void {
     document.querySelectorAll<HTMLElement>('.movie-list .item').forEach(item => {
@@ -758,9 +779,7 @@ class ListEnhancementManager {
       hideByBlacklist: !!this.config.hideBlacklistedActorsInList,
       hideByNonFavorited: !!this.config.hideNonFavoritedActorsInList,
       hideUnrecognized: this.config.hideUnrecognizedActorsInList === true,
-      treatSubscribedAsFavorited: this.config.treatSubscribedAsFavorited !== false,
       ensureActorIndex: () => this.actorDataCache.ensureActorIndex(),
-      ensureSubscriptions: () => this.actorDataCache.ensureSubscriptions(),
       getActorById: id => this.actorDataCache.getActorById(id),
       hideItemByActor: hideListItemByActor,
       clearActorOnlyHiding: clearListItemActorHiding,

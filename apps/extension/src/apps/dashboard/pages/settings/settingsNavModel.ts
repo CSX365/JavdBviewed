@@ -20,12 +20,6 @@ export type SettingsNavItem = {
  */
 export const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
   {
-    id: 'display-settings',
-    title: '显示设置',
-    description: '控制影片显示和过滤',
-    icon: 'fa-eye',
-  },
-  {
     id: 'enhancement-settings',
     title: '功能增强',
     description: '增强功能和体验',

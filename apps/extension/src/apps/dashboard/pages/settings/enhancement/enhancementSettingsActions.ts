@@ -14,7 +14,6 @@ import {
   getSettings,
   saveSettings,
   syncDashboardState,
-  notifyJavdbTabsSettingsUpdated,
 } from '../shared/settingsPersist';
 import { getValue, setValue } from '../../../../../utils/storage';
 import { sendRuntimeMessage } from '../../../../../platform/browser/runtimeMessages';
@@ -58,10 +57,11 @@ export async function clearLastAppliedActorTags(): Promise<void> {
 }
 
 /**
- * 广播设置更新（大小写两套，对齐遗留）
+ * 广播设置更新：统一发小写 `settings-updated`（内容主路由 contentMessageRouter
+ * 只认小写；原大写 SETTINGS_UPDATED 仅 passwordHelper 兼容识别，属冗余双发，
+ * 2026-09-27 审计 B6 收敛）。带 settings payload，内容侧无需二次读存储。
  */
 export function broadcastEnhancementSettings(settings: ExtensionSettings): void {
-  notifyJavdbTabsSettingsUpdated();
   try {
     chrome.tabs.query({ url: '*://javdb.com/*' }, (tabs) => {
       tabs.forEach((tab) => {
@@ -69,7 +69,7 @@ export function broadcastEnhancementSettings(settings: ExtensionSettings): void 
         try {
           chrome.tabs.sendMessage(
             tab.id,
-            { type: 'SETTINGS_UPDATED', settings },
+            { type: 'settings-updated', settings },
             () => {
               if (chrome.runtime.lastError) {
                 /* ignore */
@@ -136,21 +136,6 @@ export function navigateToAISettings(): void {
         detail: { section: 'ai-settings' },
       }),
     );
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * 跳转功能增强（可带子页签，如 'list' 精准落在列表页增强）。
- * hashchange 触发 Dashboard 导航重挂载；enhancement 页初始化时
- * 读取 hash 第三段确定子页签。
- */
-export function navigateToEnhancementSettings(subtab?: 'list' | 'video' | 'actor' | 'other'): void {
-  try {
-    window.location.hash = subtab
-      ? `#tab-settings/enhancement-settings/${subtab}`
-      : '#tab-settings/enhancement-settings';
   } catch {
     /* ignore */
   }

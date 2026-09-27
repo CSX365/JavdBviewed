@@ -57,6 +57,7 @@ function findHighlightContainer(element: Element): HTMLElement {
     '.magnet-concurrency-config .form-group-inline',
     '.form-group',
     '.form-group-checkbox',
+    '[data-ui-pattern="setting-section"]',
     '.setting-item',
     '.settings-card',
     '.settings-section',

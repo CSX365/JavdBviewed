@@ -101,10 +101,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: true,
       hideByNonFavorited: true,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(['actor-black']),
       actors: [blacklisted],
-      subscribedActorIds: new Set(),
       actorIndexSize: 2,
     }).reason).toBe('ACTOR_BLACKLIST');
 
@@ -112,10 +110,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: true,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(['actor-missing']),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 3,
     }).reason).toBe('ACTOR_NOT_FAVORITED');
 
@@ -123,10 +119,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: true,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 3,
     }).reason).toBe('ACTOR_NOT_FAVORITED');
 
@@ -134,10 +128,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: true,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(['actor-miho']),
       actors: [miho],
-      subscribedActorIds: new Set(),
       actorIndexSize: 3,
     }).reason).toBeNull();
   });
@@ -148,10 +140,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: false,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 12,
     });
     expect(decision.reason).toBe('ACTOR_UNRECOGNIZED');
@@ -164,10 +154,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: false,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 0,
     }).reason).toBeNull();
 
@@ -176,10 +164,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: false,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(['actor-missing']),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 12,
     }).reason).toBeNull();
 
@@ -188,10 +174,8 @@ describe('list enhancement helpers', () => {
       hideByBlacklist: false,
       hideByNonFavorited: true,
       hideUnrecognized: true,
-      treatSubscribedAsFavorited: true,
       domActorIds: new Set(),
       actors: [],
-      subscribedActorIds: new Set(),
       actorIndexSize: 12,
     }).reason).toBe('ACTOR_NOT_FAVORITED');
   });

@@ -56,7 +56,6 @@ export interface ListEnhancementConfig {
   enableActorPenetration?: boolean;
   /** 演员名称标识：对穿透卡片演员名做收藏/订阅/黑名单着色与悬浮提示（默认开） */
   enableActorNameMarks?: boolean;
-  treatSubscribedAsFavorited?: boolean;
   listDisplayControl?: ListDisplayControlConfig;
   showStatusBadge?: boolean;
   enableStatusQuickAction?: boolean;
@@ -101,7 +100,6 @@ export function createDefaultListEnhancementConfig(): ListEnhancementConfig {
     hideUnrecognizedActorsInList: false,
     enableActorPenetration: false,
     enableActorNameMarks: true,
-    treatSubscribedAsFavorited: true,
     listDisplayControl: {
       enabled: true,
       columnCount: 4,

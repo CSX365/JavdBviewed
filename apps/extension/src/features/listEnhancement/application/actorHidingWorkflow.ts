@@ -34,9 +34,7 @@ export interface ApplyActorBasedHidingOptions {
   hideByBlacklist: boolean;
   hideByNonFavorited: boolean;
   hideUnrecognized: boolean;
-  treatSubscribedAsFavorited: boolean;
   ensureActorIndex: () => Promise<Map<string, ActorIndexRecord>>;
-  ensureSubscriptions: () => Promise<Set<string>>;
   getActorById: (id: string) => Promise<ActorIndexRecord | null | undefined>;
   hideItemByActor: (item: HTMLElement, reason: ActorHidingReason) => void;
   clearActorOnlyHiding: (item: HTMLElement) => void;
@@ -51,7 +49,6 @@ export async function applyActorBasedHiding(options: ApplyActorBasedHidingOption
     hideByBlacklist,
     hideByNonFavorited,
     hideUnrecognized,
-    treatSubscribedAsFavorited,
     logger,
     verbose = false,
   } = options;
@@ -67,10 +64,7 @@ export async function applyActorBasedHiding(options: ApplyActorBasedHidingOption
       return;
     }
 
-    const [actorIndex, subscribed] = await Promise.all([
-      options.ensureActorIndex(),
-      options.ensureSubscriptions(),
-    ]);
+    const actorIndex = await options.ensureActorIndex();
 
     const allActorIds = extractActorIdsFromListItem(item);
     debugLog(`[ActorHiding] ${videoInfo.code}: Found ${allActorIds.size} actor IDs in DOM: ${Array.from(allActorIds).join(', ')}`);
@@ -97,10 +91,8 @@ export async function applyActorBasedHiding(options: ApplyActorBasedHidingOption
       hideByBlacklist,
       hideByNonFavorited,
       hideUnrecognized,
-      treatSubscribedAsFavorited,
       domActorIds: allActorIds,
       actors,
-      subscribedActorIds: subscribed,
       actorIndexSize: actorIndex.size,
     });
 
