@@ -776,7 +776,7 @@ export function WebdavSettingsPage() {
               id="webdavBackupSection"
               title="备份数据范围"
               icon={<i className="fas fa-database" />}
-              description="选择要备份到云端的数据类型"
+              description="选择要备份到云端的数据类型；未勾选的类别不会纳入备份，恢复时该类别不处理，本地数据不受影响"
             >
               <div className="flex flex-col gap-1 px-2 py-2">
                 {BACKUP_RANGE_OPTIONS.map((opt) => (

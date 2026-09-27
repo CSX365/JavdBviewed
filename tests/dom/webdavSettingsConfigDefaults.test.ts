@@ -254,3 +254,26 @@ describe('WebDAV settings config default endpoint', () => {
     expect(darkActionButtonRule).toContain('border-color: transparent');
   });
 });
+describe('WebDAV backup range description (enforced semantics)', () => {
+  const rangeNote = '未勾选的类别不会纳入备份，恢复时该类别不处理，本地数据不受影响';
+
+  it('legacy 设置页说明文案包含「未勾选不纳入备份、恢复不处理」语义，且 5 复选框与始终包含项在位', () => {
+    const html = fs.readFileSync(
+      path.resolve(root, 'apps/extension/src/dashboard/partials/tabs/settings-webdav.html'),
+      'utf8',
+    );
+    expect(html).toContain(rangeNote);
+    for (const id of ['webdavBackupCoreData', 'webdavBackupActorData', 'webdavBackupNewWorksData', 'webdavBackupSystemConfig', 'webdavBackupLogsData']) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(html).toContain('始终包含');
+  });
+
+  it('React 设置页说明文案与 legacy 一致（双实现口径不漂移）', () => {
+    const reactSource = fs.readFileSync(
+      path.resolve(root, 'apps/extension/src/apps/dashboard/pages/settings/webdav/WebdavSettingsPage.tsx'),
+      'utf8',
+    );
+    expect(reactSource).toContain(rangeNote);
+  });
+});

@@ -128,6 +128,56 @@ async function getCurrentSettingsWithIdentity(): Promise<any> {
   });
 }
 
+/** 恢复存在性守卫覆盖的类别（可被 replace 模式清空本地数据的 7 类） */
+export type BackupPresenceCategory =
+  | 'viewed'
+  | 'actors'
+  | 'newWorks'
+  | 'lists'
+  | 'magnets'
+  | 'logs'
+  | 'magnetPushLogs';
+
+/**
+ * 判断备份文件中是否包含某类别数据（纯函数，mirror 下方各 read* 读路径的多级回退链）。
+ * 语义：「键存在（即使空值/空数组）」=存在 → 恢复行为与旧版完全一致（全量旧备份不变）；
+ * 「键缺失」（备份侧按 backupRange 省略，或旧版本备份本就没有该字段）→ 恢复侧跳过该类别，
+ * 不触碰本地数据（尤其 replace 模式不得清空本地）。
+ */
+export function backupContainsCategory(importData: any, category: BackupPresenceCategory): boolean {
+  const storageAll = importData?.storageAll;
+  switch (category) {
+    case 'viewed':
+      return Array.isArray(importData?.idb?.viewedRecords)
+        || importData?.data != null
+        || importData?.viewed != null
+        || storageAll?.[STORAGE_KEYS.VIEWED_RECORDS] != null;
+    case 'actors':
+      return Array.isArray(importData?.idb?.actors)
+        || importData?.actorRecords != null
+        || storageAll?.[STORAGE_KEYS.ACTOR_RECORDS] != null;
+    case 'newWorks':
+      return Array.isArray(importData?.idb?.newWorks)
+        || importData?.newWorks?.records != null
+        || importData?.newWorks?.subscriptions != null
+        || importData?.newWorks?.config != null
+        || storageAll?.[STORAGE_KEYS.NEW_WORKS_RECORDS] != null
+        || storageAll?.[STORAGE_KEYS.NEW_WORKS_SUBSCRIPTIONS] != null
+        || storageAll?.[STORAGE_KEYS.NEW_WORKS_CONFIG] != null;
+    case 'lists':
+      return Array.isArray(importData?.idb?.lists);
+    case 'magnets':
+      return Array.isArray(importData?.idb?.magnets);
+    case 'logs':
+      return Array.isArray(importData?.idb?.logs)
+        || Array.isArray(importData?.logs);
+    case 'magnetPushLogs':
+      return Array.isArray(importData?.idb?.magnetPushLogs)
+        || Array.isArray(importData?.magnetPushLogs)
+        || Array.isArray(importData?.data?.magnetPushLogs);
+  }
+}
+
 export async function applyImportDataDirect(importData: any, options?: RestoreApplyOptions, serviceOptions: RestoreServiceOptions = {}): Promise<{ success: boolean; error?: string; summary?: any }> {
   const logger = serviceOptions.logger;
   const opts = {
@@ -226,6 +276,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('viewed', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'viewed')) {
+            mark('viewed', { mode: opts.categoryModes.viewed, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           const cloudItems = readViewedRecords(importData);
           const mode = opts.categoryModes.viewed;
           if (mode === 'merge') {
@@ -248,6 +302,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('actors', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'actors')) {
+            mark('actors', { mode: opts.categoryModes.actors, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           const cloudItems = readActorRecords(importData);
           const mode = opts.categoryModes.actors;
           const localItems = mode === 'merge' ? await safeGetAll(() => db.getAll('actors')) : [];
@@ -265,6 +323,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('newWorks', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'newWorks')) {
+            mark('newWorks', { mode: opts.categoryModes.newWorks, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           const cloudItems = readNewWorksRecords(importData);
           const mode = opts.categoryModes.newWorks;
           const localItems = mode === 'merge' ? await safeGetAll(() => db.getAll('newWorks')) : [];
@@ -292,6 +354,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('lists', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'lists')) {
+            mark('lists', { mode: opts.categoryModes.lists, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           const cloudItems = Array.isArray(importData?.idb?.lists) ? importData.idb.lists : [];
           const mode = opts.categoryModes.lists;
           const localItems = mode === 'merge' ? await safeGetAll(() => db.getAll('lists')) : [];
@@ -309,6 +375,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('magnets', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'magnets')) {
+            mark('magnets', { mode: opts.categoryModes.magnets, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           let items: any[] = [];
           if (Array.isArray(importData?.idb?.magnets)) items = importData.idb.magnets;
           const mode = opts.categoryModes.magnets;
@@ -329,6 +399,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('logs', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'logs')) {
+            mark('logs', { mode: opts.categoryModes.logs, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           let items: any[] = [];
           if (Array.isArray(importData?.idb?.logs)) items = importData.idb.logs;
           else if (Array.isArray(importData?.logs)) items = importData.logs;
@@ -362,6 +436,10 @@ export async function applyImportDataDirect(importData: any, options?: RestoreAp
       await restoreCategory('magnetPushLogs', async () => {
         const c0 = Date.now();
         try {
+          if (!backupContainsCategory(importData, 'magnetPushLogs')) {
+            mark('magnetPushLogs', { mode: opts.categoryModes.magnetPushLogs, replaced: false, reason: 'missing', durationMs: Date.now() - c0 });
+            return;
+          }
           let items: any[] = [];
           if (Array.isArray(importData?.idb?.magnetPushLogs)) items = importData.idb.magnetPushLogs;
           else if (Array.isArray(importData?.magnetPushLogs)) items = importData.magnetPushLogs;
