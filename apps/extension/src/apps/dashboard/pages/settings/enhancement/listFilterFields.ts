@@ -34,8 +34,8 @@ export const ACTOR_LIST_FILTER_FIELDS: ListFilterField[] = [
   {
     key: 'hideNonFavoritedActorsInList',
     id: 'hideNonFavoritedActorsInList',
-    label: '隐藏匹配演员全在黑名单中的作品',
-    description: '同时隐藏列表页有演员信息但本地无演员记录的作品。本地演员库暂不区分收藏/未收藏',
+    label: '隐藏未收藏演员的作品',
+    description: '收藏=演员在演员库且未拉黑（库由「演员同步」拉取你的收藏演员列表+演员页手动收藏构成；拉黑的演员取消收藏后仍保留在库）。匹配演员全被拉黑、或识别出的演员全不在库时，该作品被隐藏。建议先执行一次演员同步以完整覆盖收藏。',
   },
   {
     key: 'hideUnrecognizedActorsInList',
