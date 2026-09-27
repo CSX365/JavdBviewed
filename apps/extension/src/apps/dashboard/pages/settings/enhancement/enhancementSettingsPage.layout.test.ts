@@ -247,4 +247,30 @@ describe('EnhancementSettingsPage layout', () => {
       expect(fieldsSource).toContain(`id: '${id}'`);
     }
   });
+
+  it('keeps the hideNonFavoritedActorsInList label aligned with the popup short copy', () => {
+    // 2026-09-27 方案 B（用户拍板）：设置页标题对齐 popup 既有短文案（13 字→10 字，
+    // popup 宽度零风险），描述改写为准确口径（收藏=在演员库且未拉黑）。纯文案零行为变更。
+    const expectedLabel = '隐藏未收藏演员的作品';
+    const expectedDescription =
+      '收藏=演员在演员库且未拉黑（库由「演员同步」拉取你的收藏演员列表+演员页手动收藏构成；拉黑的演员取消收藏后仍保留在库）。匹配演员全被拉黑、或识别出的演员全不在库时，该作品被隐藏。建议先执行一次演员同步以完整覆盖收藏。';
+    const fieldsSource = readFileSync(join(here, 'listFilterFields.ts'), 'utf8');
+    expect(fieldsSource).toContain(`label: '${expectedLabel}'`);
+    expect(fieldsSource).toContain(`description: '${expectedDescription}'`);
+    expect(fieldsSource).not.toContain('隐藏匹配演员全在黑名单中的作品');
+    // legacy 静态设置页同文案同步（搜索锚点 label 不漂移）
+    const legacySource = readFileSync(
+      join(here, '..', '..', '..', '..', '..', 'dashboard', 'partials', 'tabs', 'settings-enhancement.html'),
+      'utf8',
+    );
+    expect(legacySource).toContain(`<label for="hideNonFavoritedActorsInList">${expectedLabel}</label>`);
+    expect(legacySource).toContain(`<p class="input-description">${expectedDescription}</p>`);
+    expect(legacySource).not.toContain('隐藏匹配演员全在黑名单中的作品');
+    // popup 既有短文案逐字一致（popup 侧零改动，这里锁一致性）
+    const popupSource = readFileSync(
+      join(here, '..', '..', '..', '..', '..', 'apps', 'popup', 'bootstrap.ts'),
+      'utf8',
+    );
+    expect(popupSource).toContain(`'${expectedLabel}'`);
+  });
 });
